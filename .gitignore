@@ -1,0 +1,16 @@
+build/
+install/
+log/
+Datasets/
+.mimocode/
+.vscode/
+src/livox_ros_driver2/.git.embedded.backup/
+
+*.bag
+*.db3
+*.mcap
+*.pcd
+
+src/super_lio/tmp/
+__pycache__/
+.pytest_cache/
