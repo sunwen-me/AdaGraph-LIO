@@ -220,15 +220,36 @@ void SuperLIO::stateProcess(){
     time_record_.Evaluate([this](){Propagation_Undistort();}, "[Undistort]");
     time_record_.Evaluate([this]() { DownSample(); }, "[DownSample]");
     time_record_.Evaluate([this]() { Observe(); }, "[Observe]");
+    ApplyGroundRobotConstraint();
     time_record_.Evaluate([this]() { UpdateMap(); }, "[UpdateMap]");
   }else{
     Propagation_Undistort();
     DownSample();
     Observe();
+    ApplyGroundRobotConstraint();
     UpdateMap();
   }
   Output();
   caceData();
+}
+
+void SuperLIO::ApplyGroundRobotConstraint(){
+  if (!g_ground_robot_planar_constraint) {
+    return;
+  }
+
+  auto state = kf_->GetSysState();
+  const M3 current_R = state.R.R_;
+  const scalar yaw = std::atan2(current_R(1, 0), current_R(0, 0));
+  const M3 yaw_R =
+      Eigen::AngleAxis<scalar>(yaw, V3::UnitZ()).toRotationMatrix();
+
+  state.R = SO3(yaw_R);
+  state.v.z() = 0.0;
+
+  const V3 base_offset = yaw_R * (-g_odom_robo.R_ * g_odom_robo.t_);
+  state.p.z() = static_cast<scalar>(g_ground_robot_base_z) - base_offset.z();
+  kf_->SetX(state);
 }
 
 

@@ -7,9 +7,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(CMAKE_BUILD_TYPE "Release")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -pthread -fexceptions -flto=auto")
-set(CMAKE_C_FLAGS_RELEASE "-O3 -Wall -fPIC")
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 add_definitions(-DROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
 
 
@@ -24,25 +24,17 @@ find_package(sensor_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
-# find_package(livox_ros_driver2 REQUIRED)  # Optional: only for Livox LiDAR
-
-# Try to find livox_ros_driver2 (optional)
-find_package(livox_ros_driver2 QUIET)
-if(livox_ros_driver2_FOUND)
-  message(STATUS "livox_ros_driver2 found, enabling Livox support")
-  add_definitions(-DHAS_LIVOX)
-else()
-  message(STATUS "livox_ros_driver2 not found, Livox support disabled")
-endif()
+find_package(pcl_conversions REQUIRED)
+find_package(livox_ros_driver2 REQUIRED)
 
 find_package(Eigen3 REQUIRED NO_MODULE)
 find_package(PCL REQUIRED)
 find_package(Glog REQUIRED)
 find_package(basic REQUIRED)
+find_package(Threads REQUIRED)
 
 # AdaGraph-LIO dependencies
 find_package(GTSAM REQUIRED)
-find_package(Torch REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(TBB QUIET)
 find_package(OpenMP QUIET)
@@ -107,15 +99,8 @@ include_directories(
   ${PCL_INCLUDE_DIRS}
   ${Glog_INCLUDE_DIRS}
   ${GTSAM_INCLUDE_DIR}
-  ${TORCH_INCLUDE_DIRS}
   ${basic_INCLUDE_DIRS}
-  /opt/ros/lyrical/include/tf2_ros
-  /opt/ros/lyrical/include/tf2_msgs
-  /opt/ros/lyrical/include/visualization_msgs
   ${livox_ros_driver2_INCLUDE_DIRS}
-  /opt/ros/lyrical/include/message_filters
-  /opt/ros/lyrical/include/pcl_conversions
-  /opt/ros/lyrical/include/pcl_msgs
 )
 
 file(GLOB_RECURSE LIO_LIB_SRC CONFIGURE_DEPENDS "src/lio/*.cpp" "src/ros/*.cpp")
@@ -174,18 +159,21 @@ target_link_libraries(lio PUBLIC
   Eigen3::Eigen
   ${PCL_LIBRARIES}
   glog
-  pthread
+  Threads::Threads
   ${cpp_typesupport_target}
   gtsam
-  ${TORCH_LIBRARIES}
   ${rclcpp_LIBRARIES}
-  ${sensor_msgs_LIBRARIES}
+  ${std_msgs_LIBRARIES}
   ${std_srvs_LIBRARIES}
   ${geometry_msgs_LIBRARIES}
+  ${sensor_msgs_LIBRARIES}
+  ${visualization_msgs_LIBRARIES}
   ${nav_msgs_LIBRARIES}
+  ${pcl_ros_LIBRARIES}
+  ${pcl_conversions_LIBRARIES}
+  ${livox_ros_driver2_LIBRARIES}
   ${basic_LIBRARIES}
   ${tf2_ros_LIBRARIES}
-  ${livox_ros_driver2_LIBRARIES}
 )
 
 if(TARGET kiss_matcher::kiss_matcher_core)
@@ -198,15 +186,29 @@ if(SUPER_LIO_USE_VENDOR_FAST_GICP)
   target_link_libraries(lio PUBLIC fast_gicp_vendor)
 elseif(fast_gicp_FOUND)
   target_compile_definitions(lio PUBLIC HAS_FAST_GICP)
-  ament_target_dependencies(lio fast_gicp)
+  if(TARGET fast_gicp::fast_gicp)
+    target_link_libraries(lio PUBLIC fast_gicp::fast_gicp)
+  elseif(TARGET fast_gicp)
+    target_link_libraries(lio PUBLIC fast_gicp)
+  else()
+    target_include_directories(lio PUBLIC ${fast_gicp_INCLUDE_DIRS})
+    target_link_libraries(lio PUBLIC ${fast_gicp_LIBRARIES})
+  endif()
 endif()
 
 target_include_directories(lio PUBLIC
   ${rclcpp_INCLUDE_DIRS}
-  ${sensor_msgs_INCLUDE_DIRS}
+  ${std_msgs_INCLUDE_DIRS}
   ${std_srvs_INCLUDE_DIRS}
   ${geometry_msgs_INCLUDE_DIRS}
+  ${sensor_msgs_INCLUDE_DIRS}
+  ${visualization_msgs_INCLUDE_DIRS}
   ${nav_msgs_INCLUDE_DIRS}
+  ${pcl_ros_INCLUDE_DIRS}
+  ${pcl_conversions_INCLUDE_DIRS}
+  ${livox_ros_driver2_INCLUDE_DIRS}
+  ${basic_INCLUDE_DIRS}
+  ${tf2_ros_INCLUDE_DIRS}
 )
 
 add_executable(super_lio_node src/apps/super_lio_node.cpp)

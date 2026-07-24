@@ -226,7 +226,23 @@ void PriorMapLocalization::process(Frame&& frame)
       manual_kiss_requested_.exchange(false, std::memory_order_acq_rel);
 
   if (g_kiss_matcher_enable) {
-    if (manual_kiss_requested) {
+    const int min_kiss_frames = std::max(
+        1, std::min(g_prior_map_loc_min_kiss_frames, g_prior_map_loc_local_frames));
+    const bool has_enough_kiss_frames =
+        local_frames_odom_.size() >= static_cast<std::size_t>(min_kiss_frames);
+
+    if (!has_enough_kiss_frames &&
+        (manual_kiss_requested ||
+         (state_ == State::UNINITIALIZED && !startup_kiss_attempted_) ||
+         (state_ == State::LOST && !lost_kiss_attempted_))) {
+      if (manual_kiss_requested) {
+        manual_kiss_requested_.store(true, std::memory_order_release);
+      }
+      LOG(WARNING) << YELLOW
+                   << " ---> [PriorMapLocalization]: waiting for KISS local submap, frames: "
+                   << local_frames_odom_.size() << "/" << min_kiss_frames
+                   << RESET;
+    } else if (manual_kiss_requested) {
       should_run_kiss = true;
       force_jump = true;
     } else if (state_ == State::UNINITIALIZED && !startup_kiss_attempted_) {
@@ -417,8 +433,7 @@ PriorMapLocalization::RegistrationResult PriorMapLocalization::runRegistration(
   vgicp.setTransformationEpsilon(1e-4);
   vgicp.setEuclideanFitnessEpsilon(1e-4);
   vgicp.setResolution(std::max(0.1f, g_prior_map_loc_local_voxel_size));
-  vgicp.setNumThreads(
-      static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
+  vgicp.setNumThreads(std::max(1, g_prior_map_loc_num_threads));
   vgicp.align(aligned, toMatrix4f(initial_map_odom));
   result.converged = vgicp.hasConverged();
   result.fitness = vgicp.getFitnessScore();

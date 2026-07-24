@@ -51,6 +51,7 @@ protected:
   void Propagation_Undistort();
   void DownSample();
   void Observe();
+  void ApplyGroundRobotConstraint();
   virtual void UpdateMap();
   virtual void Output();
   void caceData();

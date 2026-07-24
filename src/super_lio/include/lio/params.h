@@ -41,7 +41,7 @@ namespace LI2Sup{
   extern std::string g_imu_topic;
   extern std::string g_lidar_topic;
 
-  extern int   g_lidar_type;       // 1: mid360, 2: hesai16, 3: velo16, 4: velo32, 5: vel_nclt, 6: ls16 
+  extern int   g_lidar_type;       // 1: Livox CustomMsg, 2-7: other sensors, 8: sim XYZI, 9: Livox PointCloud2
   extern float g_blind2;
   extern float g_maxrange2;
   extern int   g_filter_rate;
@@ -49,6 +49,8 @@ namespace LI2Sup{
   extern float g_voxel_fliter_size;
 
   extern int    g_imu_type;
+  extern BASIC::V3 g_imu_acc_scale;
+  extern BASIC::V3 g_imu_gyro_scale;
   extern double g_gravity_norm;
   extern double g_imu_na;
   extern double g_imu_ng;
@@ -84,6 +86,10 @@ namespace LI2Sup{
 
   /// for planner
   extern bool g_planner_enable;
+
+  /// Optional ground robot constraint for 2D navigation/simulation.
+  extern bool g_ground_robot_planar_constraint;
+  extern double g_ground_robot_base_z;
 
   /// Define the hybrid residual formulation.
   enum ResidualType{
@@ -121,11 +127,13 @@ namespace LI2Sup{
   extern float g_prior_map_loc_map_voxel_size;
   extern float g_prior_map_loc_local_voxel_size;
   extern int g_prior_map_loc_local_frames;
+  extern int g_prior_map_loc_min_kiss_frames;
   extern int g_prior_map_loc_min_frame_interval;
   extern float g_prior_map_loc_crop_radius;
   extern int g_prior_map_loc_max_target_points;
   extern int g_prior_map_loc_max_source_points;
   extern int g_prior_map_loc_max_iterations;
+  extern int g_prior_map_loc_num_threads;
   extern double g_prior_map_loc_max_fitness;
   extern double g_prior_map_loc_max_translation;
   extern double g_prior_map_loc_max_rotation_deg;

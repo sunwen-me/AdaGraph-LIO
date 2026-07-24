@@ -10,6 +10,9 @@
     lio.ros.lidar_topic: "/livox/lidar"
     lio.ros.imu_topic: "/livox/imu"
 
+    # 1: livox_ros_driver2 CustomMsg
+    # 9: livox_ros_driver2 PointCloud2 (PointXYZRTLT, xfer_format=0)
+    # Livox_mid360.py exposes this parameter as the lidar_type launch argument.
     lio.sensor.lidar_type: 1
     lio.sensor.blind: 2.0
     lio.sensor.maxrange: 60.0
@@ -71,6 +74,7 @@
     lio.prior_map_localization.max_target_points: 120000
     lio.prior_map_localization.max_source_points: 50000
     lio.prior_map_localization.max_iterations: 30
+    lio.prior_map_localization.num_threads: 4
     lio.prior_map_localization.max_fitness: 1.0
     lio.prior_map_localization.max_translation: 2.0
     lio.prior_map_localization.max_rotation_deg: 20.0

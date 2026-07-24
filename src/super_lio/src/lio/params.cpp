@@ -32,6 +32,8 @@ namespace LI2Sup{
   float  g_voxel_fliter_size;
 
   int    g_imu_type;
+  V3     g_imu_acc_scale = V3::Ones();
+  V3     g_imu_gyro_scale = V3::Ones();
   double g_gravity_norm = 9.7946;
   double g_imu_na;
   double g_imu_ng;
@@ -68,6 +70,9 @@ namespace LI2Sup{
   /// for planner
   bool g_planner_enable;
 
+  bool g_ground_robot_planar_constraint = false;
+  double g_ground_robot_base_z = 0.0;
+
   ResidualType g_residual_type = PROB;
 
   /// for relocation
@@ -97,11 +102,13 @@ namespace LI2Sup{
   float g_prior_map_loc_map_voxel_size = 0.5f;
   float g_prior_map_loc_local_voxel_size = 0.5f;
   int g_prior_map_loc_local_frames = 8;
+  int g_prior_map_loc_min_kiss_frames = 8;
   int g_prior_map_loc_min_frame_interval = 5;
   float g_prior_map_loc_crop_radius = 40.0f;
   int g_prior_map_loc_max_target_points = 120000;
   int g_prior_map_loc_max_source_points = 50000;
   int g_prior_map_loc_max_iterations = 30;
+  int g_prior_map_loc_num_threads = 4;
   double g_prior_map_loc_max_fitness = 1.0;
   double g_prior_map_loc_max_translation = 2.0;
   double g_prior_map_loc_max_rotation_deg = 20.0;

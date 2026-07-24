@@ -70,6 +70,7 @@
     lio.prior_map_localization.max_target_points: 120000
     lio.prior_map_localization.max_source_points: 50000
     lio.prior_map_localization.max_iterations: 30
+    lio.prior_map_localization.num_threads: 4
     lio.prior_map_localization.max_fitness: 1.0
     lio.prior_map_localization.max_translation: 2.0
     lio.prior_map_localization.max_rotation_deg: 20.0
