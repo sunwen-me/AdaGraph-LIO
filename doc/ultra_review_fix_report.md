@@ -2,7 +2,8 @@
 
 分支:`fix/ultra-review`(基线存档标签:`archive/pre-ultra-fix-20260726`)。日期:2026-07-27。
 本报告面向项目作者与答辩评审,内容以各工作包决策日志与验收记录为准,可逐条对照代码核查。
-**本轮全部改动仍在工作区,未 commit。**
+Fable5 审查修复已保存为 9 个本地提交(`b21e5dc` 至 `4c6e67c`);
+后续人工复核修复当前仍在工作区,尚未 commit。
 
 ---
 
@@ -22,9 +23,9 @@
 
 `git diff --stat archive/pre-ultra-fix-20260726`:
 
-- **53 个文件改动,+2335 / −1047 行**;
-- 另有未跟踪新增:`doc/LICENSES.md`、4 个 gtest 测试文件(共 883 行,
-  `src/basic/test/`、`src/super_lio/test/`);
+- 截至 `4c6e67c` 共 **59 个文件改动,+3620 / −1047 行**;
+- 上述统计已包含 `doc/LICENSES.md` 和 4 个 gtest 测试文件;
+  后续人工复核产生的工作区改动不计入该提交统计;
 - 工单条目共约 90 条(backend 12、basic 11、config 12、frontend 15、localization 11、
   nav 9、octvox 6、ros 17),验收全部通过(3 条 partial、1 条 skipped_ok);
   验收发现的回归/联动问题经 fixup 轮 11 项(A–K)处置;
@@ -185,7 +186,7 @@
 | C | sim/livox_360.yaml 显式 use_unknown: false 覆盖新默认 | major | fixed:改 true |
 | D | z_min/z_max 语义变更未同步配置 | critical | fixed:sim.yaml 换算为相对值(−0.585/1.265)并注释;resetFromCloud 的地面高度基准连带修正(+sensorMountHeight());补 sensor_mount_height: 0.735 |
 | E | 占据栅格输入被固定为 0.3 m 降采样云(dense 语义丢失) | major | fixed:恢复随 g_visual_dense 选择稠密/降采样云 |
-| F | kf_init 静止门无超时兜底(振动平台可能永不启动) | major | fixed(部分):连续拒绝 20 窗(≈10 s)后告警降级用当前窗初始化;阈值参数化 deferred |
+| F | kf_init 静止门无超时兜底(振动平台可能永不启动) | major | 复核修正:运动窗口不得用于估计陀螺零偏和加速度比例;持续等待静止窗口,首个及每 20 个拒绝窗口告警;阈值参数化 deferred |
 | G | grid_update_step 未接线 yaml | — | fixed:declare/get + yaml 键(默认 1) |
 | H | save_map_dir 绝对路径仍拼 ROOT | — | fixed:仅相对路径拼接 |
 | I | localization 4 个新参数未入装载路径 | — | fixed:params + ROSWrapper declare/get + init() 赋值 |
@@ -268,7 +269,7 @@ unary PriorFactor 加入图,形成"里程计链 + 绝对观测"的有冗余图�
 1. 后端不再写回 ESKF(链式图下写回本是恒等,理论上轨迹 bit 级不变;消除 float 往返扰动路径)。
 2. ESKF 新增尾段传播到扫描末端:去畸变覆盖完整扫描,快速旋转下建图质量理论上只会变好。
 3. 扫描驱动 Predict 对 dt<0 或 >0.2 s 的样本跳过积分并重锚时间(原样把空洞积分进 P);高频前向路径同样受 0.2 s 门限保护。
-4. IMU 初始化:零加计拒绝初始化;静止性门(gyro 方差 0.01、加计相对方差 4e-3)不满足时重等,连续 20 窗(≈10 s)不满足则告警降级初始化。怠速振动平台注意观察初始化日志。
+4. IMU 初始化:零加计拒绝初始化;静止性门(gyro 方差 0.01、加计相对方差 4e-3)不满足时持续等待,不再用运动窗口强制初始化。首个及每 20 个拒绝窗口告警,启动时须保持平台静止。
 5. planar 约束调平对象改为 base 系(安装旋转为单位阵的配置无变化)。
 6. 外参旋转按 yaml 书写序(行主序)装载:**非对称旋转外参的配置行为改变**(此前被转置);恒等/对角外参不受影响。
 7. HESAI16 start_time 统一到 header.stamp 时钟域;各雷达 end_time 改为全部点最大时标(过滤前),同步窗口更准确。
@@ -289,7 +290,7 @@ unary PriorFactor 加入图,形成"里程计链 + 绝对观测"的有冗余图�
 **ROS 接口**
 
 18. odometry twist 改 child 系(REP-105);下游速度消费方(EKF/速度平滑)需确认。
-19. 全局地图改 latched QoS,仅地图变化或新订阅时重发:**首帧发布延迟可达 global_map_pub_period(默认 10 s)**,稳态不再周期性全量重发。
+19. 全局地图改 latched QoS,地图加载后立即发布首帧;后续仅地图变化或新订阅时重发,稳态不再周期性全量重发。
 20. 未知 lidar_type 启动即 LOG(FATAL)(原静默丢弃所有点云)。
 21. lidar/imu 缓冲、/lio/path 均有上限(丢最旧/FIFO);bag 循环播放自动清缓冲恢复(ESKF 彻底复位仍待做,见 §6)。
 22. glog 已初始化:日志走 stderr(可选文件),不再有 "Logging before InitGoogleLogging" 前缀;AdaGraph 日志并入 glog。
@@ -304,15 +305,11 @@ unary PriorFactor 加入图,形成"里程计链 + 绝对观测"的有冗余图�
 
 | 问题 | 位置 | 说明 |
 |---|---|---|
-| buildPriorMapGrid 对含 NaN 的先验地图点 floor→int(UB) | prior_map_localization.cpp | 先验 PCD 未过滤 NaN 时未定义行为;建议入索引前 isfinite 过滤 |
-| segmentWorldMap 对有限但巨大坐标无防护 double→int32 截断(UB) | ground_segmentation_filter.cpp | 损坏的先验 PCD 触发;occupancy 侧同类问题已修,此处未修 |
-| resetFromCloud:ground_filter 启用但先验图点数 < min_input_points(30)的边界行为 | occupancy_grid_publisher.cpp | 小点云先验图路径未覆盖 |
 | max_extent 跨度检查以首个入格格为锚 | occupancy_grid_publisher.cpp | insertCloud(无原点)路径无射程门控,reset 后首点为离群点时 400 m 窗口锚在离群位置 |
 | ivox 灌入移至 kf_init 成功路径 | super_lio_reloc.cpp | 站点级地图(数百万点)在重定位成功瞬间做全图 SE3 变换 + 插入,一次性延迟需实测 |
 | submitBackendMapToOdom 读-改-写竞态(后写者胜) | prior_map_localization.cpp | 仅实验旗标开启时存在;两写者均过门与平滑,量级受限,判定良性,仍建议后续统一 |
 | 重定位节点 odom 系化后,基类 caceData()/saveMap() 若在该节点启用会存出 odom 系地图 | super_lio_reloc.cpp | 定位模式通常不存图;如需存图须先变换回 map 系 |
 | set_global_map 新订阅检测用 sub_count 增量 | ROSWrapper.cpp | 两次 tick 之间"加入又离开/换手"的订阅者可能错过重发;latched QoS 已覆盖 transient_local 订阅者 |
-| 全局地图首帧发布延迟至多 10 s(原 ~1 s) | ROSWrapper.cpp | 见 §5-19;可调小 global_map_pub_period 缓解 |
 | VoxelGrid 告警文本/注释的有效范围与 round() 装箱差半格 | VoxelGridFilter.h:63-65 | 守卫本身正确(按 OR 检查),仅文案量程表述不精确 |
 | Gamma_2 小角分支门限 1e-5 按 double 调,T=float 实例化欠佳 | Manifold.h | 当前调用均为项目 scalar;泛型 float 使用需复核门限 |
 | computeRuleBasedScales 注释"(frontend buffers cap at 20000)"已陈旧 | adagraph_feature_extractor.cpp | 前端缓冲已改动态 resize;仅注释过期 |
@@ -324,7 +321,7 @@ unary PriorFactor 加入图,形成"里程计链 + 绝对观测"的有冗余图�
 - occupancy 独立回调组 + MultiThreadedExecutor、增量 OccupancyGridUpdate 发布(nav 8-M1):线程模型变更风险大于收益;
 - 后端位姿跳变时清 local_frames_odom_ 的接口:触发源(写回)已删除,无需新增;
 - bag 循环后 ESKF 彻底复位(原代码 `// eskf_->Reset()` todo):无既定设计,现有 dt 保护带可过渡;
-- kf_init 静止门阈值参数化:失效模式已被 20 窗超时兜底消除;
+- kf_init 静止门阈值参数化:当前固定阈值下若平台持续振动会继续等待并周期告警;
 - smoothMapToOdom 的 odom 原点参数化插值:仅小修正时生效,重推导风险大于收益;
 - between 因子噪声的切空间混系(backend M2):纯链式图下不影响估计,实验特性常态化前须处理;
 - iSAM2 图/keyframe_poses_ 无界增长:fixed-lag/边缘化属图结构改动,留后续;
@@ -337,13 +334,14 @@ unary PriorFactor 加入图,形成"里程计链 + 绝对观测"的有冗余图�
 3. Nav2 联调:栅格三态 + unknown 语义、低矮障碍出现与清除时延、SLAM 模式 frame_id、twist 改 body 系后速度消费方行为。
 4. Jetson 性能:稠密云每帧入栅格耗时(超预算调 grid_update_step)、raycast CPU 占用、cropPriorMap 桶索引提速、kf_init 处 ivox 灌入延迟。
 5. 数据集:MCD_ATH(外参行主序)、HESAI(时钟域统一后去畸变质量)、bag 循环播放自动恢复、断流内存封顶。
-6. 阈值标定:hessian_eig_min_、condition/trace/点数阈值、静止门阈值(怠速振动平台)、20 窗超时降级后的初始化质量。
+6. 阈值标定:hessian_eig_min_、condition/trace/点数阈值、静止门阈值(怠速振动平台),并评估是否需要参数化。
 7. Jetson 端 glog 版本:logs.cpp 使用 `google::IsGoogleLoggingInitialized()`(glog ≥0.5.0,JetPack 6 满足;JetPack 5 需改纯 static bool)。
 8. 部署脚本:故意用坏 tag 验证一次自动回滚路径。
 
 ### 6.4 范围与许可
 
-- **livox_ros_driver2 未纳入本轮审查与构建**(仅其 LICENSE 已录入 doc/LICENSES.md,MIT);
+- Fable5 原始审查未覆盖 livox_ros_driver2;后续人工复核已检查 Driver2
+  PointCloud2 时间戳写入方式并将该包纳入隔离构建(其 LICENSE 为 MIT);
 - **上游 Super-LIO 许可待确认**:仓库未发明 LICENSE 文件,README 已如实声明;package.xml 的 GPLv3 为上游继承;
 - kiss_matcher 源码头标 MIT 但树内缺许可文本,需作者从上游补入;pmc、xenium 许可树内不可确认,已标"待确认";
 - 外部下载依赖已钉版(pmc 4bbd40ab、xenium 1c449ae9);首次 CMake configure 需联网(已写入 README)。
@@ -352,16 +350,18 @@ unary PriorFactor 加入图,形成"里程计链 + 绝对观测"的有冗余图�
 
 ## 7. 编译与测试状态
 
-- 环境:Ubuntu 26.04 / ROS 2 Lyrical(本机);`colcon build --packages-select basic super_lio`。
+- 环境:Ubuntu 26.04 / ROS 2 Lyrical(本机);
+  `colcon build --packages-select livox_ros_driver2 basic super_lio`。
 - **干净全量重建通过,0 编译错误**(删除 build/install 缓存后重建,1 min 53 s);
   8 个工作包改动相互兼容,跨包协调性修改数为 0。stderr 仅存量警告
   (3rdparty/robin 的 -Wsign-compare 等、tf2_ros 弃用 #warning、CMake 版本弃用),均不属本轮修复范围。
-- 单元测试:新增 4 个 gtest 文件(basic:Manifold 16 例 + RingBuffer 11 例;
-  super_lio:adagraph_backend 协方差逻辑 9 例 + OctVoxMap KNN 对照 4 例),
-  `colcon test` **44 tests, 0 errors, 0 failures, 0 skipped**。
+- 单元测试:新增 6 个 gtest 文件(basic:Manifold 16 例 + RingBuffer 11 例;
+  super_lio:adagraph_backend 协方差逻辑 9 例 + OctVoxMap KNN 对照 4 例 +
+  Livox 时间戳 5 例 + 先验地图地面分割 3 例),
+  `colcon test-result` **54 tests, 0 errors, 0 failures, 0 skipped**。
   测试编写过程中发现并修复了 `SE3::log()` 小角度数值灾难(§2.1 附)——测试先于实机暴露真实 bug。
 - 每个工作包另做了 `-fsyntax-only`/增量 make 自查与 grep 无悬空符号检查;
   基础数学修复有独立数值 harness(级数/积分对照、暴力 KNN 对照)佐证。
 - fixup 轮后复跑构建与全部测试:全绿(结果文件时间戳确认为最终工作区状态)。
-- livox_ros_driver2 按约定未纳入构建。
+- livox_ros_driver2 已与 basic、super_lio 一同完成隔离构建。
 - 实验特性(§4)仅编译与逻辑验证,**无实机验证**;两旗标默认关闭。

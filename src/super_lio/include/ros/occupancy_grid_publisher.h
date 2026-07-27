@@ -25,11 +25,9 @@ public:
 
   bool enabled() const { return enabled_; }
 
-  // Grid cells are produced in the LIO odometry frame. In SLAM mode (no prior
-  // map, map->odom not maintained) the grid must be stamped with the odom
-  // frame id; only in relocation mode (prior map anchored, map->odom
-  // published) does the configured map frame id apply. Call once after
-  // setup(), before the first insert.
+  // SLAM cells live in the LIO odometry frame. Prior-map localization cells
+  // live in map: the caller must transform online scans through map->odom
+  // before insertion. Call once after setup(), before the first insert.
   void setFrameMode(bool prior_map_localization,
                     const std::string& odom_frame_id);
 

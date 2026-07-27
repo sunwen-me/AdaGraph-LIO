@@ -295,6 +295,19 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_octvoxmap test/test_octvoxmap.cpp TIMEOUT 120)
   target_link_libraries(test_octvoxmap Eigen3::Eigen ${basic_LIBRARIES})
+
+  ament_add_gtest(test_livox_point_time test/test_livox_point_time.cpp)
+  target_link_libraries(test_livox_point_time lio ${cpp_typesupport_target})
+
+  ament_add_gtest(
+    test_ground_segmentation_filter
+    test/test_ground_segmentation_filter.cpp
+  )
+  target_link_libraries(
+    test_ground_segmentation_filter
+    lio
+    ${cpp_typesupport_target}
+  )
 endif()
 
 ament_package()

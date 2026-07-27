@@ -5,7 +5,7 @@ Super-LIO 支持两种 Livox Mid-360 输入：
 | `lio.sensor.lidar_type` | ROS 2 消息 | Driver2 `xfer_format` | 逐点时间 |
 |---|---|---|---|
 | `1` | `livox_ros_driver2/msg/CustomMsg` | `1` | `offset_time`，纳秒 |
-| `9` | `sensor_msgs/msg/PointCloud2` | `0` | `timestamp`，绝对纳秒 |
+| `9` | `sensor_msgs/msg/PointCloud2` | `0` | `timestamp`，帧内纳秒偏移 |
 
 类型 `9` 只接受 Livox Driver2 的 PointXYZRTLT 字段布局：
 
@@ -19,13 +19,17 @@ line       UINT8
 timestamp  FLOAT64
 ```
 
-`line` 字段由驱动发布，但 Super-LIO 当前不参与计算。解析器会检查其余六个必需字段，按照消息头时间计算每个点的相对时间：
+`line` 字段由驱动发布，但 Super-LIO 当前不参与计算。Livox Driver2
+1.2.x 将 `offset_time` 直接写入 `timestamp`，Super-LIO 按纳秒换算：
 
 ```text
-offset_time = (point.timestamp - header.stamp) * 1e-9
+offset_time = point.timestamp * 1e-9
 ```
 
-解析时继续应用 Livox `tag` 有效性过滤、盲区过滤、最大量程过滤和 `filter_rate` 抽样。扫描结束时间取全部有效逐点时间中的最大偏移，因此 ESKF 可以继续执行逐点运动畸变补偿。
+解析器也兼容部分转换数据集使用的绝对纳秒时间戳。解析时继续应用
+Livox `tag` 有效性过滤、盲区过滤、最大量程过滤和 `filter_rate`
+抽样。扫描结束时间取全部有效逐点时间中的最大偏移，因此 ESKF
+可以继续执行逐点运动畸变补偿。
 
 ## 编译
 

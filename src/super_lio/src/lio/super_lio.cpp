@@ -102,12 +102,19 @@ void SuperLIO::init(){
   adagraph_backend_->init();
 
   prior_map_localization_ = std::make_unique<PriorMapLocalization>();
-  prior_map_localization_->init(
+  const bool prior_map_localization_active = prior_map_localization_->init(
       [wrapper = data_wrapper_](const SE3& map_to_odom) {
         if (wrapper) {
           wrapper->set_map_to_odom(map_to_odom);
         }
+      },
+      [wrapper = data_wrapper_](const CloudPtr& prior_map) {
+        if (wrapper) {
+          wrapper->set_global_map(prior_map);
+        }
       });
+  data_wrapper_->set_prior_map_localization_active(
+      prior_map_localization_active);
 
   LOG(INFO) << GREEN << " ---> [SuperLIO]: initialized." << RESET;
 }
@@ -143,10 +150,7 @@ void SuperLIO::process(){
 constexpr double kInitMaxGyroVar = 0.01;      // summed per-axis variance, (rad/s)^2
 constexpr double kInitMaxAcceVarRel = 4e-3;   // accel variance relative to |mean_acce|^2 (unit-free)
 constexpr double kInitMinAcceNorm = 0.1;      // below this the accel stream carries no gravity signal
-// A platform that never passes the gates (engine idle vibration, hand-held
-// start) must still initialize eventually: after this many rejected windows
-// (~10 s at 100 Hz) accept the window anyway with degraded bias/scale.
-constexpr int kInitMaxStillRejects = 20;
+constexpr int kInitStillWarningInterval = 20;
 
 bool SuperLIO::kf_init(){
   static int imu_cout = 0;
@@ -191,19 +195,17 @@ bool SuperLIO::kf_init(){
   static int still_rejects = 0;
   if (gyro_var > kInitMaxGyroVar || acce_var_rel > kInitMaxAcceVarRel) {
     still_rejects++;
-    if (still_rejects < kInitMaxStillRejects) {
+    if (still_rejects == 1 ||
+        still_rejects % kInitStillWarningInterval == 0) {
       LOG(WARNING) << YELLOW << " ---> [SuperLIO]: IMU not stationary (gyro var "
                    << gyro_var << ", rel accel var " << acce_var_rel
-                   << "), waiting for a still window (" << still_rejects << "/"
-                   << kInitMaxStillRejects << ")." << RESET;
-      reset_stats();
-      return false;
+                   << "), waiting for a still window; rejected "
+                   << still_rejects << " window(s)." << RESET;
     }
-    LOG(WARNING) << YELLOW << " ---> [SuperLIO]: no still window after "
-                 << still_rejects
-                 << " attempts, initializing from a moving window; gyro bias and"
-                    " imu_scale estimates may be degraded." << RESET;
+    reset_stats();
+    return false;
   }
+  still_rejects = 0;
 
   V3 gravity = - mean_acce * g_gravity_norm / mean_acce.norm();
   V3 ref_gravity(0, 0, - g_gravity_norm);

@@ -1,6 +1,7 @@
 
 #include "ros/ROSWrapper.h"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+#include "ros/livox_point_time.h"
 
 #include <filesystem>
 
@@ -678,8 +679,9 @@ void ROSWrapper::setupIO(){
 
   occupancy_grid_publisher_ = std::make_unique<OccupancyGridPublisher>();
   occupancy_grid_publisher_->setup(*this, cb_sensor_);
-  // SLAM mode has no map->odom correction, so the grid must be stamped with
-  // the odom frame; relocation mode keeps the configured (map) frame id.
+  // Prior-map loading happens after ROSWrapper construction. Start in the
+  // configured mode so its initial map reset has the right frame; SuperLIO
+  // updates this to the actual initialization result before spinning.
   occupancy_grid_publisher_->setFrameMode(
       g_prior_map_loc_enable,
       g_nav2_tf_enable ? g_nav2_odom_frame : "world");
@@ -992,18 +994,12 @@ void ROSWrapper::stdMsgHandler(const sensor_msgs::msg::PointCloud2::SharedPtr ms
          iter_x != iter_x.end();
          ++i, ++iter_x, ++iter_y, ++iter_z, ++iter_intensity,
          ++iter_tag, ++iter_timestamp) {
-      const double point_timestamp_ns = *iter_timestamp;
-      if (!std::isfinite(point_timestamp_ns)) {
+      const auto point_offset_time = decodeLivoxPointOffsetSeconds(
+          *iter_timestamp, frame_start_ns);
+      if (!point_offset_time) {
         continue;
       }
-
-      double point_offset_time =
-          (point_timestamp_ns - frame_start_ns) * 1e-9;
-      if (point_offset_time < -1e-3 || point_offset_time > 1.0) {
-        continue;
-      }
-      point_offset_time = std::max(0.0, point_offset_time);
-      max_offset_time = std::max(max_offset_time, point_offset_time);
+      max_offset_time = std::max(max_offset_time, *point_offset_time);
       ++valid_timestamps;
 
       if ((i % static_cast<std::size_t>(filter_rate)) != 0) {
@@ -1019,14 +1015,15 @@ void ROSWrapper::stdMsgHandler(const sensor_msgs::msg::PointCloud2::SharedPtr ms
       }
 
       lidar_data.pc->emplace_back(
-          *iter_x, *iter_y, *iter_z, *iter_intensity, point_offset_time);
+          *iter_x, *iter_y, *iter_z, *iter_intensity, *point_offset_time);
     }
 
     if (valid_timestamps == 0 || lidar_data.pc->size() < 10) {
       RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 5000,
           "Livox PointCloud2 rejected: no usable point timestamps or fewer "
-          "than 10 valid points. Expected timestamp in nanoseconds.");
+          "than 10 valid points. Expected a nanosecond offset or absolute "
+          "nanosecond timestamp.");
       return;
     }
 
@@ -1288,10 +1285,21 @@ void ROSWrapper::update_occupancy_grid_from_body_cloud(
     const CloudPtr& pc,
     const NavState& state) {
   if (occupancy_grid_publisher_ && occupancy_grid_publisher_->enabled()) {
+    SE3 body_to_grid(state.R.R_, state.p);
+    if (prior_map_localization_active_) {
+      SE3 map_to_odom;
+      if (!get_map_to_odom(map_to_odom)) {
+        // The prior map already owns the map-frame grid. Until localization
+        // initializes map->odom, odom-frame scans cannot be inserted safely.
+        return;
+      }
+      body_to_grid = map_to_odom * body_to_grid;
+    }
+
     Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();
-    transformation.block<3, 3>(0, 0) = state.R.R_.cast<float>();
-    transformation.block<3, 1>(0, 3) = state.p.cast<float>();
-    Eigen::Quaterniond body_to_world(state.R.R_.cast<double>());
+    transformation.block<3, 3>(0, 0) = body_to_grid.R_.cast<float>();
+    transformation.block<3, 1>(0, 3) = body_to_grid.t_.cast<float>();
+    Eigen::Quaterniond body_to_world(body_to_grid.R_.cast<double>());
     occupancy_grid_publisher_->insertBodyCloud(
         pc, transformation, body_to_world, rclcpp::Time(toRosTime(state.timestamp)));
   }
@@ -1393,6 +1401,13 @@ void ROSWrapper::set_global_map(const BASIC::CloudPtr& global_map){
             "/lio/global_map", rclcpp::QoS(1).transient_local());
   }
 
+  // Publish the first sample immediately. transient_local keeps it available
+  // for Nav/RViz subscribers that join later.
+  global_map_msg_.header.stamp = this->now();
+  pub_global_map_->publish(global_map_msg_);
+  global_map_dirty_ = false;
+  global_map_sub_count_ = pub_global_map_->get_subscription_count();
+
   if (!global_map_timer_) {
     global_map_timer_ =
       this->create_wall_timer(
@@ -1410,6 +1425,15 @@ void ROSWrapper::set_global_map(const BASIC::CloudPtr& global_map){
           global_map_dirty_ = false;
         },
         cb_sensor_);
+  }
+}
+
+void ROSWrapper::set_prior_map_localization_active(bool active)
+{
+  prior_map_localization_active_ = active;
+  if (occupancy_grid_publisher_) {
+    occupancy_grid_publisher_->setFrameMode(
+        active, g_nav2_tf_enable ? g_nav2_odom_frame : "world");
   }
 }
 

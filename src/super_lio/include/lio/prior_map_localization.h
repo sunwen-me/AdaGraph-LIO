@@ -24,11 +24,13 @@ namespace LI2Sup {
 class PriorMapLocalization {
 public:
   using MapToOdomCallback = std::function<void(const BASIC::SE3&)>;
+  using PriorMapCallback = std::function<void(const BASIC::CloudPtr&)>;
 
   PriorMapLocalization();
   ~PriorMapLocalization();
 
-  bool init(MapToOdomCallback map_to_odom_callback);
+  bool init(MapToOdomCallback map_to_odom_callback,
+            PriorMapCallback prior_map_callback = {});
   void shutdown();
   bool enabled() const { return enabled_; }
 
@@ -121,6 +123,7 @@ private:
   bool has_map_to_odom_ = false;
   BASIC::SE3 map_to_odom_;
   MapToOdomCallback map_to_odom_callback_;
+  PriorMapCallback prior_map_callback_;
 
   /// Accepted registrations queued for the backend. Bounded; overflow drops
   /// the oldest entry. Guarded by observation_mutex_ (lock holds only the

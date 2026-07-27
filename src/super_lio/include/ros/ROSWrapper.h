@@ -91,6 +91,7 @@ public:
   void pub_processing_time(double time, double current_time, double mean_time, double std_time);
 
   void set_global_map(const BASIC::CloudPtr& global_map);
+  void set_prior_map_localization_active(bool active);
   void set_map_to_odom(const BASIC::SE3& map_to_odom);
   bool get_map_to_odom(BASIC::SE3& map_to_odom) const;
   bool consume_manual_relocalization_request();
@@ -149,6 +150,7 @@ private:
   rclcpp::TimerBase::SharedPtr global_map_timer_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   std::unique_ptr<OccupancyGridPublisher> occupancy_grid_publisher_;
+  bool prior_map_localization_active_ = false;
   mutable std::mutex map_to_odom_mutex_;
   BASIC::SE3 map_to_odom_;
   bool has_map_to_odom_ = false;

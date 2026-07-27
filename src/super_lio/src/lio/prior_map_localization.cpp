@@ -50,6 +50,19 @@ std::uint64_t voxelKey(int cx, int cy, int cz)
   return pack(cx) | (pack(cy) << 21) | (pack(cz) << 42);
 }
 
+std::optional<int> voxelCoordinate(double coordinate, double cell_size)
+{
+  constexpr int kMinCell = -(1 << 20);
+  constexpr int kMaxCell = (1 << 20) - 1;
+  const double cell = std::floor(coordinate / cell_size);
+  if (!std::isfinite(cell) ||
+      cell < static_cast<double>(kMinCell) ||
+      cell > static_cast<double>(kMaxCell)) {
+    return std::nullopt;
+  }
+  return static_cast<int>(cell);
+}
+
 /// Backend observation queue bound; overflow drops the oldest entry.
 constexpr std::size_t kMapObservationQueueCap = 8;
 
@@ -62,7 +75,8 @@ PriorMapLocalization::~PriorMapLocalization()
   shutdown();
 }
 
-bool PriorMapLocalization::init(MapToOdomCallback map_to_odom_callback)
+bool PriorMapLocalization::init(MapToOdomCallback map_to_odom_callback,
+                                PriorMapCallback prior_map_callback)
 {
   enabled_ = g_prior_map_loc_enable;
   if (!enabled_) {
@@ -76,6 +90,7 @@ bool PriorMapLocalization::init(MapToOdomCallback map_to_odom_callback)
   prior_map_grid_cell_size_ = std::max(1.0f, g_prior_map_loc_crop_grid_cell_size);
 
   map_to_odom_callback_ = std::move(map_to_odom_callback);
+  prior_map_callback_ = std::move(prior_map_callback);
   if (!map_to_odom_callback_) {
     LOG(WARNING) << YELLOW
                  << " ---> [PriorMapLocalization]: disabled, missing map->odom callback."
@@ -234,9 +249,34 @@ bool PriorMapLocalization::loadPriorMap()
     return false;
   }
 
+  CloudPtr finite_map(new PointCloudType());
+  finite_map->reserve(raw_map->size());
+  for (const auto& point : raw_map->points) {
+    if (std::isfinite(point.x) &&
+        std::isfinite(point.y) &&
+        std::isfinite(point.z)) {
+      finite_map->push_back(point);
+    }
+  }
+  if (finite_map->empty()) {
+    LOG(ERROR) << RED
+               << " ---> [PriorMapLocalization]: prior map contains no finite points: "
+               << map_path << RESET;
+    return false;
+  }
+  finite_map->width = finite_map->size();
+  finite_map->height = 1;
+  finite_map->is_dense = true;
+  raw_map = std::move(finite_map);
+
   prior_map_ = downsampleCloud(raw_map, g_prior_map_loc_map_voxel_size);
   prior_map_->is_dense = false;
   buildPriorMapGrid();
+  if (prior_map_callback_) {
+    // Publish/reset consumers from the original map before releasing it.
+    // Registration keeps only the downsampled copy above.
+    prior_map_callback_(raw_map);
+  }
   LOG(INFO) << GREEN
             << " ---> [PriorMapLocalization]: loaded prior map: " << map_path
             << ", raw points: " << raw_map->size()
@@ -263,10 +303,18 @@ void PriorMapLocalization::buildPriorMapGrid()
   const double cell = std::max(1.0f, prior_map_grid_cell_size_);
   for (std::uint32_t i = 0; i < prior_map_->size(); ++i) {
     const auto& point = prior_map_->points[i];
-    const int cx = static_cast<int>(std::floor(point.x / cell));
-    const int cy = static_cast<int>(std::floor(point.y / cell));
-    const int cz = static_cast<int>(std::floor(point.z / cell));
-    prior_map_grid_[voxelKey(cx, cy, cz)].push_back(i);
+    if (!std::isfinite(point.x) ||
+        !std::isfinite(point.y) ||
+        !std::isfinite(point.z)) {
+      continue;
+    }
+    const auto cx = voxelCoordinate(point.x, cell);
+    const auto cy = voxelCoordinate(point.y, cell);
+    const auto cz = voxelCoordinate(point.z, cell);
+    if (!cx || !cy || !cz) {
+      continue;
+    }
+    prior_map_grid_[voxelKey(*cx, *cy, *cz)].push_back(i);
   }
 }
 
@@ -488,20 +536,34 @@ CloudPtr PriorMapLocalization::cropPriorMap(const SE3& predicted_map_lidar) cons
   const double radius = std::max(1.0f, g_prior_map_loc_crop_radius);
   const double radius2 = radius * radius;
   const V3 center = predicted_map_lidar.t_;
+  if (!center.allFinite()) {
+    LOG(WARNING) << YELLOW
+                 << " ---> [PriorMapLocalization]: non-finite predicted pose; "
+                    "skipping prior-map crop."
+                 << RESET;
+    return cropped;
+  }
   cropped->reserve(std::min<std::size_t>(
       prior_map_->size(), static_cast<std::size_t>(std::max(1, g_prior_map_loc_max_target_points))));
 
   const double cell = std::max(1.0f, prior_map_grid_cell_size_);
-  const int min_cx = static_cast<int>(std::floor((center.x() - radius) / cell));
-  const int max_cx = static_cast<int>(std::floor((center.x() + radius) / cell));
-  const int min_cy = static_cast<int>(std::floor((center.y() - radius) / cell));
-  const int max_cy = static_cast<int>(std::floor((center.y() + radius) / cell));
-  const int min_cz = static_cast<int>(std::floor((center.z() - radius) / cell));
-  const int max_cz = static_cast<int>(std::floor((center.z() + radius) / cell));
+  const auto min_cx = voxelCoordinate(center.x() - radius, cell);
+  const auto max_cx = voxelCoordinate(center.x() + radius, cell);
+  const auto min_cy = voxelCoordinate(center.y() - radius, cell);
+  const auto max_cy = voxelCoordinate(center.y() + radius, cell);
+  const auto min_cz = voxelCoordinate(center.z() - radius, cell);
+  const auto max_cz = voxelCoordinate(center.z() + radius, cell);
+  if (!min_cx || !max_cx || !min_cy || !max_cy || !min_cz || !max_cz) {
+    LOG(WARNING) << YELLOW
+                 << " ---> [PriorMapLocalization]: predicted crop exceeds "
+                    "the prior-map grid coordinate range."
+                 << RESET;
+    return cropped;
+  }
 
-  for (int cx = min_cx; cx <= max_cx; ++cx) {
-    for (int cy = min_cy; cy <= max_cy; ++cy) {
-      for (int cz = min_cz; cz <= max_cz; ++cz) {
+  for (int cx = *min_cx; cx <= *max_cx; ++cx) {
+    for (int cy = *min_cy; cy <= *max_cy; ++cy) {
+      for (int cz = *min_cz; cz <= *max_cz; ++cz) {
         const auto it = prior_map_grid_.find(voxelKey(cx, cy, cz));
         if (it == prior_map_grid_.end()) {
           continue;

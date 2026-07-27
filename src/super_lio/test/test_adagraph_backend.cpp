@@ -18,10 +18,19 @@
 
 #include "basic/Manifold.h"
 #include "basic/alias.h"
+#include "basic/logs.h"
 #include "lio/adagraph_backend.h"
 #include "lio/adagraph_types.h"
 
 namespace {
+
+class LoggingEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override { BASIC::init_log(); }
+};
+
+const auto* const logging_environment =
+    ::testing::AddGlobalTestEnvironment(new LoggingEnvironment());
 
 using LI2Sup::AdaGraphBackend;
 using LI2Sup::BackendResult;
