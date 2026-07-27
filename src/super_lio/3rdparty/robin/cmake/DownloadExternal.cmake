@@ -61,10 +61,13 @@ function(robin_download_atomic_queue)
 endfunction()
 
 # xenium
+# Pinned to the commit this project was built and tested against
+# (main as of 2025-07-29); a floating branch tag would make builds
+# unreproducible.
 function(robin_download_xenium)
 	download_project(PROJ xenium
 			GIT_REPOSITORY https://github.com/mpoeter/xenium
-			GIT_TAG        main
+			GIT_TAG        1c449ae953ce2a440b0d16c5ed1181d2754860ab
 			QUIET
 			)
 	add_library(xenium INTERFACE)

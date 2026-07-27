@@ -10,6 +10,11 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
+# ROOT bakes this source tree's absolute path into the binaries; at runtime it
+# is the base directory for relative map paths (lio.map.save_map_dir, the
+# relocation map load, and a relative lio.prior_map_localization.map_file).
+# On deploy targets where this source tree is absent, pass an absolute
+# lio.prior_map_localization.map_file to bypass it.
 add_definitions(-DROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
 
 
@@ -257,10 +262,17 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# Nothing in the install space consumes these headers (the build uses the
+# source tree directly); skip test/binding/doc directories to keep the
+# Jetson install artifact small.
 install(DIRECTORY
   include/
   3rdparty/
   DESTINATION include/${PROJECT_NAME}
+  PATTERN "tests" EXCLUDE
+  PATTERN "matlab" EXCLUDE
+  PATTERN "python" EXCLUDE
+  PATTERN "docs" EXCLUDE
 )
 
 install(DIRECTORY launch/
@@ -274,5 +286,15 @@ install(DIRECTORY config/
 install(DIRECTORY rviz/
   DESTINATION share/${PROJECT_NAME}/rviz
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_adagraph_backend test/test_adagraph_backend.cpp TIMEOUT 120)
+  target_link_libraries(test_adagraph_backend lio ${cpp_typesupport_target})
+
+  ament_add_gtest(test_octvoxmap test/test_octvoxmap.cpp TIMEOUT 120)
+  target_link_libraries(test_octvoxmap Eigen3::Eigen ${basic_LIBRARIES})
+endif()
 
 ament_package()
