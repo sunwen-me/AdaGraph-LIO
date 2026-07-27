@@ -25,7 +25,7 @@ public:
 
 private:
   static void fillRelativePose(const Input& input, FeatureFrame& frame);
-  static void fillResidualStats(const Input& input, FeatureFrame& frame);
+  static void fillGradientStats(const Input& input, FeatureFrame& frame);
   static void fillGeometryStats(const Input& input, FeatureFrame& frame);
   static void fillMatchAndMotionStats(const Input& input, FeatureFrame& frame);
 };
