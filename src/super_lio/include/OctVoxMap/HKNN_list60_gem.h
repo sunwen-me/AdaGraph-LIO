@@ -6,9 +6,12 @@
 
 
 
+/// Group shell lower bounds computed for resolution 0.5 (sub-cell 0.25),
+/// i.e. sub-cell edge multiples {1, sqrt(2), 2, sqrt(5), sqrt(6)} * 0.25;
+/// OctVoxMap::SetOptions rescales the squared table for other resolutions.
 /// The last number is useless
 static const std::array<float, 6> orders_min_dis = {
-  0.250000, 0.353553, 0.500000, 0.559017, 0.612372, 10 
+  0.250000, 0.353553, 0.500000, 0.559017, 0.612372, 10
 };
 static const std::array<float, 6> orders_min_dis2 = {
   0.062500, 0.125000, 0.250000, 0.312500, 0.375000, 100

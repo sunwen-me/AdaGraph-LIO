@@ -10,7 +10,6 @@
 #include <cstring>
 #include <iostream>
 #include <execution>
-#include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -24,6 +23,7 @@ namespace LI2Sup{
 
 template<int K, typename Point>
 class KNNHeap {
+  static_assert(K == 5, "KNNHeap: update_worst_unrolled is hand-unrolled for K == 5 only");
 public:
   KNNHeap() : count(0), worst_(0), max_dist2_(0.0f) {
     memset(dist2_, 0, sizeof(dist2_));
@@ -140,7 +140,11 @@ public:
   using OctVoxType = OctVox<Point>;
 
   struct Options {
-    float resolution      = 0.5;   
+    float resolution      = 0.5;
+    // LRU eviction only starts once the voxel count reaches capacity
+    // (~150 B per voxel: list node + robin_map slot). Configs setting this
+    // to 1e8 (~15 GB) never evict in practice; long-duration large-area
+    // mapping on RAM-limited targets needs a smaller value.
     std::size_t capacity  = 1000000;
 
     Options(float __resolution, std::size_t __capacity) {
@@ -184,25 +188,23 @@ public:
     inv_resolution_ = 1.0 / resolution_;
     sub_resolution_ = resolution_ / 2.0;
     sub_inv_resolution_ = 1.0 / sub_resolution_;
+    // orders_min_dis2 holds the squared group shell bounds for resolution 0.5
+    // (sub-cell 0.25). All shell distances are fixed multiples of the sub-cell
+    // edge, so the squared bounds scale with (resolution_ / 0.5)^2.
+    const float dis2_scale = resolution_ * resolution_ * 4.0f;
+    for (std::size_t i = 0; i < orders_min_dis2.size(); ++i) {
+      orders_min_dis2_scaled_[i] = orders_min_dis2[i] * dis2_scale;
+    }
   }
 
   void insert(const Points& cloud_world);
   void printInfo() const;
-  void getMap(std::vector<float>&) const;
-  void saveMap() const;    // TODO:
-  void resetMap(const std::vector<float>&);
   void clear();
 
   void getTopK(const Point& point, KNNHeapType& top_K) const;
 
-  void getTopK_VN(const Point& point, KNNHeapType& top_K) const;
-
   void reset_max_group(){
     group_idx_max_ = flat_search_order_offsets.size() - 1;
-  }
-
-  void decrease_max_group(){
-    if(group_idx_max_ > 4) group_idx_max_--;
   }
 
   // size_t getMemoryUsageBytes() const {
@@ -223,21 +225,10 @@ private:
   float inv_resolution_ = 1.0;
   float sub_resolution_ = 0.25;
   float sub_inv_resolution_ = 4.0;
+  // Per-resolution rescaling of orders_min_dis2; the default matches the
+  // table (resolution 0.5) and SetOptions recomputes it.
+  std::array<float, 6> orders_min_dis2_scaled_ = orders_min_dis2;
   std::size_t capacity_ = 1000000;
-
-  bool reset_map_ = false;
-  int reset_map_count_ = 0;
-
-  const KEY nearby_grids_[19] = {
-    KEY(0, 0, 0),
-    KEY(-1, -1, 0), KEY(-1, 0, 0), KEY(-1, 1, 0), 
-    KEY(0, -1, 0), KEY(0, 1, 0), 
-    KEY(1, -1, 0), KEY(1, 0, 0), KEY(1, 1, 0), 
-    KEY(0, 0, -1), KEY(1, 0, -1), KEY(-1, 0, -1), 
-    KEY(0, 1, -1), KEY(0, -1, -1), 
-    KEY(0, 0, 1), KEY(1, 0, 1), KEY(-1, 0, 1), 
-    KEY(0, 1, 1), KEY(0, -1, 1)
-  };
 
   /// HashShiftMix
   struct HASH_VEC {
@@ -263,15 +254,6 @@ private:
 
 template<typename Point, typename Scalar>
 void OctVoxMap<Point, Scalar>::insert(const Points& cloud_world){
-  if(reset_map_){
-    reset_map_count_--;
-    if(reset_map_count_ > 0){
-      std::cout << "OctVoxMap::insert skip: reset_map_count_ = " << reset_map_count_ << std::endl;
-      return;
-    } 
-    reset_map_ = false;
-  }
-
   for(auto& pt : cloud_world){
     KEY fine_key = (pt * sub_inv_resolution_).array().floor().template cast<int>();
     KEY key;
@@ -373,125 +355,10 @@ void OctVoxMap<Point, Scalar>::getTopK(const Point& point, KNNHeapType& top_K) c
     }
 
     if (top_K.count == 5)
-      if (top_K.max_dist2_ < orders_min_dis2[group_idx]){
+      if (top_K.max_dist2_ < orders_min_dis2_scaled_[group_idx]){
         break;
       }
 
-  }
-}
-
-
-template<typename Point, typename Scalar>
-void OctVoxMap<Point, Scalar>::getTopK_VN(const Point& point, KNNHeapType& top_K) const{
-  KEY key = (point * inv_resolution_).array().floor().template cast<int>();
-
-  std::vector<OctVoxType*> voxels_2_search;
-  voxels_2_search.reserve(19);
-  for(std::size_t i = 0; i < 19; ++i) {
-    KEY n_key = key + nearby_grids_[i];
-    if (auto iter = grids_.find(n_key); iter != grids_.end()) {
-      voxels_2_search.emplace_back(&iter->second->second);
-    }
-  }
-
-  Point pt;
-  for(auto& voxel : voxels_2_search) {
-    for(uint8_t _i = 0; _i < 8; ++_i) {
-      if(!voxel->getPoint(_i, pt)) continue;
-      float dist2 = (pt - point).squaredNorm();
-      top_K.try_insert(dist2, pt);
-    }
-  }
-}
-
-
-template<typename Point, typename Scalar>
-void OctVoxMap<Point, Scalar>::getMap(std::vector<float>& output) const{
-  size_t total_points = 0;
-
-  output.clear();
-  output.reserve(total_points * 3);
-
-  Point point;
-  float pcl_point[3];
-  for (const auto& voxel_pair : data_) {
-    const OctVoxType& voxel = voxel_pair.second;
-    for(uint8_t i = 0; i < 8; ++i) {
-      if (!voxel.getPoint(i, point)) continue;
-      pcl_point[0] = static_cast<float>(point.x());
-      pcl_point[1] = static_cast<float>(point.y());
-      pcl_point[2] = static_cast<float>(point.z());
-      output.push_back(pcl_point[0]);
-      output.push_back(pcl_point[1]);
-      output.push_back(pcl_point[2]);
-    }
-  }
-}
-
-
-template<typename Point, typename Scalar>
-void OctVoxMap<Point, Scalar>::resetMap(const std::vector<float>& input){
-  if (input.empty()) return;
-  
-  clear();
-  size_t num_points = input.size() / 3;
-
-  Points cloud_world;
-  cloud_world.reserve(num_points);
-
-  for (size_t i = 0; i < num_points; ++i) {
-    Point point(input[i * 3], input[i * 3 + 1], input[i * 3 + 2]);
-    cloud_world.push_back(point);
-  }
-
-  insert(cloud_world);
-
-  reset_map_ = true;
-  reset_map_count_ = 10;
-}
-
-
-template<typename Point, typename Scalar>
-void OctVoxMap<Point, Scalar>::saveMap() const {
-
-  const std::string g_root_dir = std::string(ROOT);
-  std::string filename = g_root_dir + "map/OctVoxMap.pcd";
-
-  if (std::filesystem::exists(filename)) {
-    std::filesystem::remove(filename);
-    std::cout << "Removed existing file: " << filename << std::endl;
-  }
-
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
-  size_t total_points = data_.size() * 8;
-  
-  cloud->points.reserve(total_points);
-  
-  for (const auto& voxel_pair : data_) {
-    const OctVoxType& voxel = voxel_pair.second;
-    for(uint8_t i = 0; i < 8; ++i) {
-      pcl::PointXYZ pcl_point;
-      Point point;
-      if (!voxel.getPoint(i, point)) continue;
-      pcl_point.x = static_cast<float>(point.x());
-      pcl_point.y = static_cast<float>(point.y());
-      pcl_point.z = static_cast<float>(point.z());
-      cloud->points.push_back(pcl_point);
-    }
-  }
-  
-  cloud->width = cloud->points.size();
-  cloud->height = 1;
-  cloud->is_dense = true;
-  
-  int result = pcl::io::savePCDFileBinary(filename, *cloud);
-  
-  if (result == 0) {
-    std::cout << "Successfully saved " << cloud->points.size() 
-              << " points to " << filename << " (binary format)" << std::endl;
-  } else {
-    std::cerr << "Error saving point cloud to " << filename << std::endl;
-    throw std::runtime_error("Failed to save PCD file: " + filename);
   }
 }
 
