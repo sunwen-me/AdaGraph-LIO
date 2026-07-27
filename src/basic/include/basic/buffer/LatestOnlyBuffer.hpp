@@ -10,6 +10,8 @@
 #include <condition_variable>
 
 
+// NOTE: currently unused anywhere in this repository (kept as a utility).
+
 template <typename T, size_t BUFFER_SIZE = 10>
 class LatestOnlyBuffer {
 public:

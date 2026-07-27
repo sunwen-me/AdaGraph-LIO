@@ -4,162 +4,27 @@
 
 namespace BASIC {
 
-template <>
-inline float tolerance<float>() {
-    return 1e-6f;
-}
-template <>
-inline double tolerance<double>() {
-    return 1e-11;
-}
-
-template <typename Derived>
-inline Eigen::Matrix<typename Derived::Scalar, 3, 3> SKEW(const Eigen::MatrixBase<Derived> &v) {
-  Eigen::Matrix<typename Derived::Scalar, 3, 3>  m;
-  m << typename Derived::Scalar(0), -v[2], v[1], 
-      v[2], typename Derived::Scalar(0), -v[0], 
-      -v[1], v[0], typename Derived::Scalar(0);
-  return m;
-}
-
-
-template <typename T>
-inline Eigen::Matrix<T, 3, 3> Exp(const Eigen::Matrix<T, 3, 1> &&ang) {
-  T ang_norm = ang.norm();
-  if (ang_norm > 1e-10) {
-    Eigen::Matrix<T, 3, 1> r_axis = ang / ang_norm;
-    Eigen::Matrix<T, 3, 3> K;
-    K = SKEW(r_axis);
-    /// Roderigous Tranformation
-    return Eye3 + std::sin(ang_norm) * K + (1.0 - std::cos(ang_norm)) * K * K;
-  } else {
-    return Eye3;
-  }
-}
-
-
 M3 A_matrix(const V3& v) {
   M3 res;
   double squaredNorm = v.squaredNorm();
   double norm = std::sqrt(squaredNorm);
-  if (norm < tolerance<scalar>()) {
-    res = M3::Identity();
+  // c1 = (1-cos(t))/t^2, c2 = (t-sin(t))/t^3
+  double c1, c2;
+  if (norm < 1e-2) {
+    // 小角稳定泰勒展开(同 SO3::Exp_m3)
+    // c1 ≈ 1/2 - θ^2/24 + θ^4/720
+    // c2 ≈ 1/6 - θ^2/120 + θ^4/5040
+    const double t4 = squaredNorm * squaredNorm;
+    c1 = 0.5 - squaredNorm / 24.0 + t4 / 720.0;
+    c2 = 1.0 / 6.0 - squaredNorm / 120.0 + t4 / 5040.0;
   } else {
-    res = M3::Identity() + (1 - std::cos(norm)) / squaredNorm * SO3::hat(v) +
-          (1 - std::sin(norm) / norm) / squaredNorm * SO3::hat(v) * SO3::hat(v);
+    c1 = (1 - std::cos(norm)) / squaredNorm;
+    c2 = (1 - std::sin(norm) / norm) / squaredNorm;
   }
+  const M3 vhat = SO3::hat(v);
+  res = M3::Identity() + c1 * vhat + c2 * vhat * vhat;
   return res;
 }
-
-
-template <typename T>
-inline Eigen::Matrix<T, 3, 3> Gamma_1(const Eigen::Matrix<T, 3, 1>& ang){
-  T ang_norm = ang.norm();
-  if (ang_norm > 1e-10) {
-    Eigen::Matrix<T, 3, 1> r_axis = ang / ang_norm;
-    Eigen::Matrix<T, 3, 3> K;
-    K = SKEW(r_axis);
-    return Eye3 + ((1.0 - std::cos(ang_norm)) * K + (ang_norm - std::sin(ang_norm))* K * K) / ang_norm;
-  } else {
-    return Eye3;
-  }
-}
-
-
-// Second-order differential variable
-template <typename T>
-inline Eigen::Matrix<T, 3, 3> Gamma_2(const Eigen::Matrix<T, 3, 1>& ang){
-  T ang_norm = ang.norm();
-  if (ang_norm > 1e-5) {
-    Eigen::Matrix<T, 3, 1> r_axis = ang / ang_norm;
-    Eigen::Matrix<T, 3, 3> K;
-    K = SKEW(r_axis);
-    /// Roderigous Tranformation
-    return 0.5 * Eye3 + ( 2.0 * (ang_norm - std::sin(ang_norm)) * K 
-                          + ((ang_norm * ang_norm + 2 * std::cos(ang_norm) - 2) * K ) ) 
-                        / ( 2 * ang_norm * ang_norm);
-  } else {
-    return 0.5 * Eye3;
-  }
-}
-
-
-template <typename T, typename Ts>
-inline Eigen::Matrix<T, 3, 3> Exp(const Eigen::Matrix<T, 3, 1> &ang_vel, const Ts &dt) {
-  T ang_vel_norm = ang_vel.norm();
-  Eigen::Matrix<T, 3, 3> Eye3 = Eigen::Matrix<T, 3, 3>::Identity();
-
-  if (ang_vel_norm > 0.0000001) {
-    Eigen::Matrix<T, 3, 1> r_axis = ang_vel / ang_vel_norm;
-    Eigen::Matrix<T, 3, 3> K;
-
-    K = SKEW(r_axis);
-
-    T r_ang = ang_vel_norm * dt;
-
-    return Eye3 + std::sin(r_ang) * K + (1.0 - std::cos(r_ang)) * K * K;
-  } else {
-    return Eye3;
-  }
-}
-
-template <typename T>
-inline Eigen::Matrix<T, 3, 3> Exp(const T &v1, const T &v2, const T &v3) {
-  T &&norm = sqrt(v1 * v1 + v2 * v2 + v3 * v3);
-  Eigen::Matrix<T, 3, 3> Eye3 = Eigen::Matrix<T, 3, 3>::Identity();
-  if (norm > 1e-10) {
-    Eigen::Matrix<T, 3, 1> r_ang = {v1 / norm, v2 / norm, v3 / norm};
-    Eigen::Matrix<T, 3, 3> K;
-    K = SKEW(r_ang);
-    return Eye3 + std::sin(norm) * K + (1.0 - std::cos(norm)) * K * K;
-  } else {
-    return Eye3;
-  }
-}
-
-/* Logrithm of a Rotation Matrix */
-template <typename T>
-inline Eigen::Matrix<T, 3, 1> Log(const Eigen::Matrix<T, 3, 3> &R) {
-  T theta = (R.trace() > 3.0 - 1e-6) ? 0.0 : std::acos(0.5 * (R.trace() - 1));
-  Eigen::Matrix<T, 3, 1> K(R(2, 1) - R(1, 2), R(0, 2) - R(2, 0), R(1, 0) - R(0, 1));
-  return (std::abs(theta) < 0.001) ? (0.5 * K) : (0.5 * theta / std::sin(theta) * K);
-}
-
-template <typename T>
-inline Eigen::Matrix<T, 3, 1> RotMtoEuler(const Eigen::Matrix<T, 3, 3> &rot) {
-  T sy = sqrt(rot(0, 0) * rot(0, 0) + rot(1, 0) * rot(1, 0));
-  bool singular = sy < 1e-6;
-  T x, y, z;
-  if (!singular) {
-    x = atan2(rot(2, 1), rot(2, 2));
-    y = atan2(-rot(2, 0), sy);
-    z = atan2(rot(1, 0), rot(0, 0));
-  } else {
-    x = atan2(-rot(1, 2), rot(1, 1));
-    y = atan2(-rot(2, 0), sy);
-    z = 0;
-  }
-  Eigen::Matrix<T, 3, 1> ang(x, y, z);
-  return ang;
-}
-
-
-inline M4 hat6(const V6 &xi){
-  M4 xi_hat;
-  xi_hat  <<  0.0,   -xi(2),  xi(1), xi(3),
-              xi(2),  0.0,   -xi(0), xi(4),
-             -xi(1),  xi(0),  0.0,   xi(5),
-              0.0,    0.0,    0.0,   0.0;
-  return xi_hat;
-}
-
-inline V6 vee6(const M4 &xi_hat){
-  V6 xi;
-  xi << -xi_hat(1,2), xi_hat(0,2), -xi_hat(0,1),
-          xi_hat(0,3), xi_hat(1,3), xi_hat(2,3);
-  return xi;
-}
-
 
 
 /**
@@ -284,7 +149,7 @@ void SO3::exp(const M3 &w_hat){
 }
 
 V4 SO3::coeffs() const noexcept{
-  return Quat(R_).coeffs();
+  return Quat(R_).normalized().coeffs();
 }
 
 
@@ -345,7 +210,8 @@ SO3 SO3::inverse(void) const noexcept{
 }
 
 M3 SO3::adjoint() const noexcept{
-  return R_.transpose();
+  // Ad_R = R: R * hat(w) * R^T = hat(R * w)
+  return R_;
 }
 
 M3 SO3::R() const noexcept{
@@ -452,6 +318,8 @@ V4 SE3::operator*(const V4& point) const noexcept{
 void SE3::update(const V6 &dxi){
   SE3 dT(dxi);
   T_ = dT.T() * T_;
+  R_ = T_.topLeftCorner<3,3>();
+  t_ = T_.topRightCorner<3,1>();
 }
 
 void SE3::updateRhs(const V6 &dxi){
@@ -490,9 +358,19 @@ M4 SE3::log(void) const noexcept{
   M3 Vinv = M3::Identity();
   if (o > 1e-12)
   {
-    double c1 = std::sin(o);
-    double c2 = (1 - std::cos(o))/o;
-    double k1 = 1/o/o*(1 - 0.5*c1/c2);
+    // k1 = (1 - 0.5*o*sin(o)/(1-cos(o))) / o^2 suffers catastrophic
+    // cancellation for small o (garbage below ~1e-3, 0/0 below ~2e-8 where
+    // 1-cos(o) underflows to 0); use the series
+    // k1 = 1/12 + o^2/720 + o^4/30240 + O(o^6) there.
+    double k1;
+    if (o < 1e-2) {
+      const double o2 = o * o;
+      k1 = 1.0 / 12.0 + o2 / 720.0 + o2 * o2 / 30240.0;
+    } else {
+      double c1 = std::sin(o);
+      double c2 = (1 - std::cos(o))/o;
+      k1 = 1/o/o*(1 - 0.5*c1/c2);
+    }
     Vinv += -0.5*w_hat + k1* w_hat*w_hat;
   }
   V3 v = Vinv * T_.topRightCorner<3,1>();

@@ -18,8 +18,6 @@
 #include <gflags/gflags.h>
 
 
-using namespace google;
-
 namespace BASIC {
 
 #define RESET "\033[0m"
@@ -41,5 +39,5 @@ void init_log();
 void init_log_dir(std::string log_dir);
 
 
-}  // namespace LI2Sup
+}  // namespace BASIC
 #endif

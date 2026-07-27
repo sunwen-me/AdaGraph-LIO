@@ -2,6 +2,7 @@
 #define MULTI_SOURCE_LATEST_BUFFER_HPP
 
 
+#include <array>
 #include <vector>
 #include <atomic>
 #include <mutex>
@@ -9,6 +10,8 @@
 #include <condition_variable>
 #include <optional>
 #include <unordered_map>
+
+// NOTE: currently unused anywhere in this repository (kept as a utility).
 
 /**
  * @brief A high-responsiveness buffer for latest-state synchronization.
