@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 
 #include <pcl/common/transforms.h>
@@ -9,9 +10,27 @@
 
 namespace LI2Sup {
 
+namespace {
+
+// Guards the double->int32 cell cast: a divergent LIO state or a corrupt
+// point must not overflow the cell index.
+bool toCellIndex(double meters, double resolution, std::int32_t& cell) {
+  const double scaled = std::floor(meters / resolution);
+  if (!(scaled >= -2.0e9 && scaled <= 2.0e9)) {
+    return false;
+  }
+  cell = static_cast<std::int32_t>(scaled);
+  return true;
+}
+
+}  // namespace
+
 void OccupancyGridPublisher::setup(
     rclcpp::Node& node,
     const rclcpp::CallbackGroup::SharedPtr& callback_group) {
+  clock_ = node.get_clock();
+  logger_ = node.get_logger();
+
   node.declare_parameter<bool>("lio.occupancy_grid.enable", false);
   node.get_parameter("lio.occupancy_grid.enable", enabled_);
 
@@ -46,7 +65,24 @@ void OccupancyGridPublisher::setup(
   node.get_parameter("lio.occupancy_grid.inflation_radius", inflation_radius_);
   inflation_radius_ = std::max(0.0, inflation_radius_);
 
-  node.declare_parameter<bool>("lio.occupancy_grid.use_unknown", false);
+  node.declare_parameter<double>("lio.occupancy_grid.max_range", 30.0);
+  node.get_parameter("lio.occupancy_grid.max_range", max_range_);
+  max_range_ = std::max(resolution_, max_range_);
+
+  node.declare_parameter<double>("lio.occupancy_grid.max_extent", 400.0);
+  node.get_parameter("lio.occupancy_grid.max_extent", max_extent_);
+  max_extent_ = std::max(10.0 * resolution_, max_extent_);
+  max_extent_cells_ = static_cast<std::int64_t>(std::llround(max_extent_ / resolution_));
+
+  node.declare_parameter<bool>("lio.occupancy_grid.raycast.enable", true);
+  node.get_parameter("lio.occupancy_grid.raycast.enable", raycast_enable_);
+
+  node.declare_parameter<double>("lio.occupancy_grid.raycast.max_ray_length", 15.0);
+  node.get_parameter("lio.occupancy_grid.raycast.max_ray_length",
+                     raycast_max_ray_length_);
+  raycast_max_ray_length_ = std::max(resolution_, raycast_max_ray_length_);
+
+  node.declare_parameter<bool>("lio.occupancy_grid.use_unknown", true);
   node.get_parameter("lio.occupancy_grid.use_unknown", use_unknown_);
 
   node.declare_parameter<bool>("lio.occupancy_grid.reset_on_global_map", true);
@@ -108,8 +144,25 @@ void OccupancyGridPublisher::setup(
       callback_group);
 
   RCLCPP_INFO(node.get_logger(),
-              "Occupancy grid enabled: topic=%s frame=%s resolution=%.3f z=[%.2f, %.2f]",
-              topic_.c_str(), frame_id_.c_str(), resolution_, z_min_, z_max_);
+              "Occupancy grid enabled: topic=%s frame=%s resolution=%.3f z=[%.2f, %.2f] "
+              "max_range=%.1f raycast=%s max_extent=%.1f",
+              topic_.c_str(), frame_id_.c_str(), resolution_, z_min_, z_max_,
+              max_range_, raycast_enable_ ? "on" : "off", max_extent_);
+}
+
+void OccupancyGridPublisher::setFrameMode(
+    bool prior_map_localization,
+    const std::string& odom_frame_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!prior_map_localization && !odom_frame_id.empty()) {
+    // SLAM mode: cells live in the LIO odometry frame and no map->odom
+    // correction exists, so the configured (map) frame id would displace the
+    // grid whenever TF diverges from identity.
+    frame_id_ = odom_frame_id;
+  }
+  RCLCPP_INFO(logger_, "Occupancy grid frame mode: %s, frame_id=%s",
+              prior_map_localization ? "relocation" : "slam",
+              frame_id_.c_str());
 }
 
 void OccupancyGridPublisher::insertCloud(
@@ -120,8 +173,11 @@ void OccupancyGridPublisher::insertCloud(
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  insertCloudLocked(cloud);
+  // No sensor origin on this path: no range gating, no free-space carving,
+  // and the z band stays an absolute world-frame band.
+  insertCloudLocked(cloud, true);
   latest_stamp_ = stamp;
+  dirty_ = true;
 }
 
 void OccupancyGridPublisher::insertBodyCloud(
@@ -143,7 +199,12 @@ void OccupancyGridPublisher::insertBodyCloud(
 
   BASIC::CloudPtr non_ground_world(new BASIC::PointCloudType());
   pcl::transformPointCloud(*segmented.non_ground, *non_ground_world, body_to_world);
-  insertCloud(non_ground_world, stamp);
+
+  const Eigen::Vector3f sensor_origin = body_to_world.block<3, 1>(0, 3);
+  std::lock_guard<std::mutex> lock(mutex_);
+  insertScanLocked(non_ground_world, sensor_origin);
+  latest_stamp_ = stamp;
+  dirty_ = true;
 }
 
 void OccupancyGridPublisher::resetFromCloud(
@@ -153,13 +214,42 @@ void OccupancyGridPublisher::resetFromCloud(
     return;
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (reset_on_global_map_) {
-    occupied_cells_.clear();
-    has_bounds_ = false;
+  // Prior-map path: apply the same ground rejection as the online path. The
+  // scan segmenter needs a sensor-centric cloud, so the map-frame variant is
+  // used here; its ground-relative band replaces the absolute z band.
+  BASIC::CloudPtr insert_cloud = cloud;
+  bool ground_relative_filtered = false;
+  if (ground_filter_.enabled()) {
+    // z_max_ is relative to the sensor origin; the segmenter wants a ceiling
+    // above local ground, so add the sensor's height above ground.
+    const auto segmented = ground_filter_.segmentWorldMap(
+        cloud, z_max_ + ground_filter_.sensorMountHeight());
+    insert_cloud = segmented.non_ground;
+    ground_relative_filtered = true;
   }
-  insertCloudLocked(cloud);
-  latest_stamp_ = stamp;
+
+  nav_msgs::msg::OccupancyGrid msg;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (reset_on_global_map_) {
+      observed_cells_.clear();
+      has_bounds_ = false;
+    }
+    if (insert_cloud && !insert_cloud->empty()) {
+      insertCloudLocked(insert_cloud, !ground_relative_filtered);
+    }
+    latest_stamp_ = stamp;
+    // Publish directly so the transient_local sample never keeps advertising
+    // the pre-reset grid, including when the reset empties the map.
+    msg = (!observed_cells_.empty() && has_bounds_)
+              ? buildMessageLocked(stamp)
+              : buildEmptyMessageLocked(stamp);
+    dirty_ = false;
+  }
+
+  if (publisher_) {
+    publisher_->publish(msg);
+  }
 }
 
 void OccupancyGridPublisher::publish() {
@@ -170,10 +260,11 @@ void OccupancyGridPublisher::publish() {
   nav_msgs::msg::OccupancyGrid msg;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (occupied_cells_.empty() || !has_bounds_) {
+    if (!dirty_ || observed_cells_.empty() || !has_bounds_) {
       return;
     }
     msg = buildMessageLocked(latest_stamp_);
+    dirty_ = false;
   }
 
   publisher_->publish(msg);
@@ -185,6 +276,12 @@ void OccupancyGridPublisher::publishDebugClouds(
     const rclcpp::Time& stamp) {
   if (!publish_ground_debug_ || !ground_debug_pub_ || !non_ground_debug_pub_) {
     return;
+  }
+
+  std::string frame_id;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    frame_id = frame_id_;
   }
 
   auto publish_cloud =
@@ -199,7 +296,7 @@ void OccupancyGridPublisher::publishDebugClouds(
 
         sensor_msgs::msg::PointCloud2 msg;
         pcl::toROSMsg(*world_cloud, msg);
-        msg.header.frame_id = frame_id_;
+        msg.header.frame_id = frame_id;
         msg.header.stamp = stamp;
         pub->publish(msg);
       };
@@ -208,17 +305,29 @@ void OccupancyGridPublisher::publishDebugClouds(
   publish_cloud(result.non_ground, non_ground_debug_pub_);
 }
 
-void OccupancyGridPublisher::insertCloudLocked(const BASIC::CloudPtr& cloud) {
+void OccupancyGridPublisher::insertCloudLocked(
+    const BASIC::CloudPtr& cloud,
+    bool apply_height_filter) {
   const int inflation_cells =
       static_cast<int>(std::ceil(inflation_radius_ / resolution_));
 
   for (const auto& point : cloud->points) {
-    if (!pointPassesHeightFilter(point)) {
+    if (apply_height_filter) {
+      if (!pointPassesHeightFilter(point)) {
+        continue;
+      }
+    } else if (!std::isfinite(point.x) ||
+               !std::isfinite(point.y) ||
+               !std::isfinite(point.z)) {
       continue;
     }
 
-    const auto cell_x = static_cast<std::int32_t>(std::floor(point.x / resolution_));
-    const auto cell_y = static_cast<std::int32_t>(std::floor(point.y / resolution_));
+    std::int32_t cell_x = 0;
+    std::int32_t cell_y = 0;
+    if (!toCellIndex(point.x, resolution_, cell_x) ||
+        !toCellIndex(point.y, resolution_, cell_y)) {
+      continue;
+    }
 
     for (int dx = -inflation_cells; dx <= inflation_cells; ++dx) {
       for (int dy = -inflation_cells; dy <= inflation_cells; ++dy) {
@@ -226,30 +335,149 @@ void OccupancyGridPublisher::insertCloudLocked(const BASIC::CloudPtr& cloud) {
           continue;
         }
 
-        const std::int32_t x = cell_x + dx;
-        const std::int32_t y = cell_y + dy;
-        occupied_cells_.insert(cellKey(x, y));
-
-        if (!has_bounds_) {
-          min_x_ = max_x_ = x;
-          min_y_ = max_y_ = y;
-          has_bounds_ = true;
-        } else {
-          min_x_ = std::min(min_x_, x);
-          max_x_ = std::max(max_x_, x);
-          min_y_ = std::min(min_y_, y);
-          max_y_ = std::max(max_y_, y);
-        }
+        applyScoreLocked(cellKey(cell_x + dx, cell_y + dy), kHitScore);
       }
     }
   }
+}
+
+void OccupancyGridPublisher::insertScanLocked(
+    const BASIC::CloudPtr& world_cloud,
+    const Eigen::Vector3f& sensor_origin) {
+  const int inflation_cells =
+      static_cast<int>(std::ceil(inflation_radius_ / resolution_));
+  const double origin_x = sensor_origin.x();
+  const double origin_y = sensor_origin.y();
+  const double origin_z = sensor_origin.z();
+
+  std::int32_t origin_cell_x = 0;
+  std::int32_t origin_cell_y = 0;
+  const bool origin_valid =
+      std::isfinite(origin_x) && std::isfinite(origin_y) && std::isfinite(origin_z) &&
+      toCellIndex(origin_x, resolution_, origin_cell_x) &&
+      toCellIndex(origin_y, resolution_, origin_cell_y);
+
+  const double max_range2 = max_range_ * max_range_;
+  const double max_ray2 = raycast_max_ray_length_ * raycast_max_ray_length_;
+
+  std::unordered_set<std::int64_t> scan_hits;
+  std::unordered_set<std::int64_t> ray_targets;
+  std::unordered_set<std::int64_t> scan_free;
+
+  for (const auto& point : world_cloud->points) {
+    if (!std::isfinite(point.x) ||
+        !std::isfinite(point.y) ||
+        !std::isfinite(point.z)) {
+      continue;
+    }
+
+    // z band relative to the current body origin so slopes and LIO z drift
+    // do not push real obstacles out of the band.
+    const double rel_z = static_cast<double>(point.z) - origin_z;
+    if (rel_z < z_min_ || rel_z > z_max_) {
+      continue;
+    }
+
+    const double dx = static_cast<double>(point.x) - origin_x;
+    const double dy = static_cast<double>(point.y) - origin_y;
+    const double planar2 = dx * dx + dy * dy;
+    if (planar2 + rel_z * rel_z > max_range2) {
+      continue;
+    }
+
+    std::int32_t cell_x = 0;
+    std::int32_t cell_y = 0;
+    if (!toCellIndex(point.x, resolution_, cell_x) ||
+        !toCellIndex(point.y, resolution_, cell_y)) {
+      continue;
+    }
+
+    for (int dxc = -inflation_cells; dxc <= inflation_cells; ++dxc) {
+      for (int dyc = -inflation_cells; dyc <= inflation_cells; ++dyc) {
+        if (dxc * dxc + dyc * dyc > inflation_cells * inflation_cells) {
+          continue;
+        }
+
+        scan_hits.insert(cellKey(cell_x + dxc, cell_y + dyc));
+      }
+    }
+
+    if (raycast_enable_ && origin_valid && planar2 <= max_ray2) {
+      // One trace per unique endpoint cell: rays to the same cell are
+      // identical, and tracing runs on the sensor callback path.
+      ray_targets.insert(cellKey(cell_x, cell_y));
+    }
+  }
+
+  for (const auto key : ray_targets) {
+    traceRayCells(origin_cell_x, origin_cell_y, keyX(key), keyY(key), scan_free);
+  }
+
+  // Hits win over same-scan pass-throughs so grazing rays do not erode
+  // surfaces observed in the same scan; each cell gets at most one score
+  // update per scan so the decay dynamics are scan-rate based.
+  for (const auto key : scan_hits) {
+    applyScoreLocked(key, kHitScore);
+  }
+  for (const auto key : scan_free) {
+    if (scan_hits.count(key) == 0) {
+      applyScoreLocked(key, -kMissScore);
+    }
+  }
+}
+
+void OccupancyGridPublisher::applyScoreLocked(std::int64_t key, int delta) {
+  const auto x = keyX(key);
+  const auto y = keyY(key);
+  if (!boundsAllowLocked(x, y)) {
+    if (clock_) {
+      RCLCPP_WARN_THROTTLE(
+          logger_, *clock_, 5000,
+          "Occupancy grid max_extent (%.1f m) reached; dropping cell updates "
+          "outside current bounds.",
+          max_extent_);
+    }
+    return;
+  }
+
+  auto it = observed_cells_.try_emplace(key, static_cast<std::int8_t>(0)).first;
+  const int score = std::clamp(static_cast<int>(it->second) + delta,
+                               kCellScoreMin, kCellScoreMax);
+  it->second = static_cast<std::int8_t>(score);
+
+  if (!has_bounds_) {
+    min_x_ = max_x_ = x;
+    min_y_ = max_y_ = y;
+    has_bounds_ = true;
+  } else {
+    min_x_ = std::min(min_x_, x);
+    max_x_ = std::max(max_x_, x);
+    min_y_ = std::min(min_y_, y);
+    max_y_ = std::max(max_y_, y);
+  }
+}
+
+bool OccupancyGridPublisher::boundsAllowLocked(
+    std::int32_t x,
+    std::int32_t y) const {
+  if (!has_bounds_) {
+    return max_extent_cells_ >= 1;
+  }
+
+  const auto span_x =
+      static_cast<std::int64_t>(std::max(max_x_, x)) - std::min(min_x_, x) + 1;
+  const auto span_y =
+      static_cast<std::int64_t>(std::max(max_y_, y)) - std::min(min_y_, y) + 1;
+  return span_x <= max_extent_cells_ && span_y <= max_extent_cells_;
 }
 
 nav_msgs::msg::OccupancyGrid OccupancyGridPublisher::buildMessageLocked(
     const rclcpp::Time& stamp) const {
   nav_msgs::msg::OccupancyGrid msg;
   msg.header.frame_id = frame_id_;
-  msg.header.stamp = stamp.nanoseconds() > 0 ? stamp : rclcpp::Clock().now();
+  // Node clock fallback respects use_sim_time.
+  msg.header.stamp =
+      stamp.nanoseconds() > 0 ? stamp : (clock_ ? clock_->now() : stamp);
   msg.info.resolution = static_cast<float>(resolution_);
 
   const int padding_cells = static_cast<int>(std::ceil(map_padding_ / resolution_));
@@ -278,7 +506,7 @@ nav_msgs::msg::OccupancyGrid OccupancyGridPublisher::buildMessageLocked(
   msg.data.assign(static_cast<std::size_t>(msg.info.width) * msg.info.height,
                   default_value);
 
-  for (const auto key : occupied_cells_) {
+  for (const auto& [key, score] : observed_cells_) {
     const auto x = keyX(key) - origin_x;
     const auto y = keyY(key) - origin_y;
     if (x < 0 || y < 0 ||
@@ -289,9 +517,26 @@ nav_msgs::msg::OccupancyGrid OccupancyGridPublisher::buildMessageLocked(
 
     const auto index = static_cast<std::size_t>(y) * msg.info.width +
                        static_cast<std::size_t>(x);
-    msg.data[index] = static_cast<int8_t>(occupied_value_);
+    msg.data[index] =
+        static_cast<int8_t>(score > 0 ? occupied_value_ : free_value_);
   }
 
+  return msg;
+}
+
+nav_msgs::msg::OccupancyGrid OccupancyGridPublisher::buildEmptyMessageLocked(
+    const rclcpp::Time& stamp) const {
+  // Minimal all-unknown grid: replaces the latched sample after a reset that
+  // left no observed cells.
+  nav_msgs::msg::OccupancyGrid msg;
+  msg.header.frame_id = frame_id_;
+  msg.header.stamp =
+      stamp.nanoseconds() > 0 ? stamp : (clock_ ? clock_->now() : stamp);
+  msg.info.resolution = static_cast<float>(resolution_);
+  msg.info.width = 1;
+  msg.info.height = 1;
+  msg.info.origin.orientation.w = 1.0;
+  msg.data.assign(1, static_cast<int8_t>(unknown_value_));
   return msg;
 }
 
@@ -311,6 +556,33 @@ std::int32_t OccupancyGridPublisher::keyX(std::int64_t key) {
 std::int32_t OccupancyGridPublisher::keyY(std::int64_t key) {
   const auto ukey = static_cast<std::uint64_t>(key);
   return static_cast<std::int32_t>(static_cast<std::uint32_t>(ukey & 0xffffffff));
+}
+
+void OccupancyGridPublisher::traceRayCells(
+    std::int32_t x0, std::int32_t y0,
+    std::int32_t x1, std::int32_t y1,
+    std::unordered_set<std::int64_t>& cells) {
+  // 2D Bresenham from the sensor cell to the hit cell, endpoint excluded.
+  const std::int32_t dx = std::abs(x1 - x0);
+  const std::int32_t dy = std::abs(y1 - y0);
+  const std::int32_t sx = x0 < x1 ? 1 : -1;
+  const std::int32_t sy = y0 < y1 ? 1 : -1;
+  std::int32_t err = dx - dy;
+  std::int32_t x = x0;
+  std::int32_t y = y0;
+
+  while (x != x1 || y != y1) {
+    cells.insert(cellKey(x, y));
+    const std::int32_t e2 = 2 * err;
+    if (e2 > -dy) {
+      err -= dy;
+      x += sx;
+    }
+    if (e2 < dx) {
+      err += dx;
+      y += sy;
+    }
+  }
 }
 
 bool OccupancyGridPublisher::pointPassesHeightFilter(

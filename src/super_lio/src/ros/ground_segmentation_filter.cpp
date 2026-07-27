@@ -1,8 +1,10 @@
 #include "ros/ground_segmentation_filter.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <exception>
 #include <cmath>
+#include <unordered_map>
 #include <vector>
 
 #include "ground_detection.hpp"
@@ -10,6 +12,9 @@
 namespace LI2Sup {
 
 void GroundSegmentationFilter::setup(rclcpp::Node& node, const std::string& prefix) {
+  logger_ = node.get_logger();
+  clock_ = node.get_clock();
+
   node.declare_parameter<bool>(prefix + ".enable", false);
   node.get_parameter(prefix + ".enable", options_.enabled);
 
@@ -53,6 +58,12 @@ void GroundSegmentationFilter::setup(rclcpp::Node& node, const std::string& pref
       prefix + ".auto_dist_to_ground", options_.auto_dist_to_ground);
   node.get_parameter(
       prefix + ".auto_dist_to_ground", options_.auto_dist_to_ground);
+
+  node.declare_parameter<double>(
+      prefix + ".sensor_mount_height", options_.sensor_mount_height);
+  node.get_parameter(
+      prefix + ".sensor_mount_height", options_.sensor_mount_height);
+  options_.sensor_mount_height = std::max(0.0, options_.sensor_mount_height);
 
   node.declare_parameter<double>(
       prefix + ".auto_seed_radius", options_.auto_seed_radius);
@@ -149,10 +160,89 @@ GroundSegmentationFilter::Result GroundSegmentationFilter::segment(
     }
     return result;
   } catch (const std::exception& e) {
+    if (clock_) {
+      RCLCPP_ERROR_THROTTLE(
+          logger_, *clock_, 5000,
+          "Ground segmentation failed (%s); passing full cloud as non-ground.",
+          e.what());
+    }
     result.ground->clear();
     *result.non_ground = *body_cloud;
     return result;
   }
+}
+
+GroundSegmentationFilter::Result GroundSegmentationFilter::segmentWorldMap(
+    const BASIC::CloudPtr& world_cloud,
+    double max_height_above_ground) const {
+  Result result;
+  result.ground.reset(new BASIC::PointCloudType());
+  result.non_ground.reset(new BASIC::PointCloudType());
+  result.dist_to_ground = options_.dist_to_ground;
+
+  if (!world_cloud || world_cloud->empty()) {
+    return result;
+  }
+
+  if (!options_.enabled ||
+      world_cloud->size() < static_cast<std::size_t>(options_.min_input_points)) {
+    *result.non_ground = *world_cloud;
+    return result;
+  }
+
+  const auto cell_of = [this](const BASIC::PointType& p) {
+    const auto cx =
+        static_cast<std::int32_t>(std::floor(p.x / options_.cell_size_x));
+    const auto cy =
+        static_cast<std::int32_t>(std::floor(p.y / options_.cell_size_y));
+    const auto ux = static_cast<std::uint64_t>(static_cast<std::uint32_t>(cx));
+    const auto uy = static_cast<std::uint64_t>(static_cast<std::uint32_t>(cy));
+    return static_cast<std::int64_t>((ux << 32) | uy);
+  };
+
+  std::unordered_map<std::int64_t, std::vector<float>> cell_heights;
+  for (const auto& point : world_cloud->points) {
+    if (!std::isfinite(point.x) ||
+        !std::isfinite(point.y) ||
+        !std::isfinite(point.z)) {
+      continue;
+    }
+    cell_heights[cell_of(point)].push_back(point.z);
+  }
+
+  // Low quantile instead of the minimum: robust against sub-floor noise
+  // points in the aggregated map.
+  std::unordered_map<std::int64_t, float> cell_ground;
+  cell_ground.reserve(cell_heights.size());
+  for (auto& [key, heights] : cell_heights) {
+    const auto index = static_cast<std::size_t>(
+        options_.auto_ground_quantile * static_cast<double>(heights.size() - 1));
+    std::nth_element(heights.begin(), heights.begin() + index, heights.end());
+    cell_ground.emplace(key, heights[index]);
+  }
+
+  for (const auto& point : world_cloud->points) {
+    if (!std::isfinite(point.x) ||
+        !std::isfinite(point.y) ||
+        !std::isfinite(point.z)) {
+      continue;
+    }
+
+    const auto it = cell_ground.find(cell_of(point));
+    if (it == cell_ground.end()) {
+      continue;
+    }
+
+    const double height = static_cast<double>(point.z) - it->second;
+    if (height > options_.ground_inlier_threshold &&
+        height <= max_height_above_ground) {
+      result.non_ground->push_back(point);
+    } else {
+      result.ground->push_back(point);
+    }
+  }
+
+  return result;
 }
 
 double GroundSegmentationFilter::estimateDistToGround(
@@ -177,7 +267,17 @@ double GroundSegmentationFilter::estimateDistToGround(
   }
 
   if (z_values.size() < static_cast<std::size_t>(options_.auto_min_points)) {
-    return options_.dist_to_ground;
+    // Seed region empty (self-occlusion / near-field blind zone): seed the
+    // ground one mount height below the sensor instead of at the sensor.
+    if (clock_) {
+      RCLCPP_WARN_THROTTLE(
+          logger_, *clock_, 10000,
+          "dist_to_ground auto estimate has only %zu points within %.1f m; "
+          "falling back to -sensor_mount_height (%.2f m).",
+          z_values.size(), options_.auto_seed_radius,
+          options_.sensor_mount_height);
+    }
+    return -options_.sensor_mount_height;
   }
 
   const auto index = static_cast<std::size_t>(
