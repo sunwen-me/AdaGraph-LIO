@@ -4,6 +4,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include "basic/logs.h"
 #include "ros/ROSWrapper.h"
 #include "lio/super_lio_reloc.h"
 
@@ -12,6 +13,7 @@ using namespace LI2Sup;
 
 int main(int argc, char** argv){
   rclcpp::init(argc, argv);
+  BASIC::init_log();
 
   ROSWrapper::Ptr data_wrapper = std::make_shared<ROSWrapper>();
   

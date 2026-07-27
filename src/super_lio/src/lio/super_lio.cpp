@@ -89,8 +89,11 @@ void SuperLIO::init(){
   }
   
   points_world_v3_.reserve(21000);
-  abcd_vec_.resize(20000);
-  effect_knn_idxs_.resize(20000);
+  abcd_vec_.reserve(20000);
+  effect_knn_idxs_.reserve(20000);
+  effect_mask_.reserve(20000);
+  effect_knn_mask_.reserve(20000);
+  point_lengths_.reserve(20000);
   voxel_grid_fliter_.setLeafSize(g_voxel_fliter_size);
 
   state_fn_ = &SuperLIO::stateWaitKFInit;
@@ -135,20 +138,71 @@ void SuperLIO::process(){
 }
 
 
+// Stationarity gates for IMU initialization: bias and imu_scale estimated from
+// a moving/vibrating window would corrupt the whole run.
+constexpr double kInitMaxGyroVar = 0.01;      // summed per-axis variance, (rad/s)^2
+constexpr double kInitMaxAcceVarRel = 4e-3;   // accel variance relative to |mean_acce|^2 (unit-free)
+constexpr double kInitMinAcceNorm = 0.1;      // below this the accel stream carries no gravity signal
+// A platform that never passes the gates (engine idle vibration, hand-held
+// start) must still initialize eventually: after this many rejected windows
+// (~10 s at 100 Hz) accept the window anyway with degraded bias/scale.
+constexpr int kInitMaxStillRejects = 20;
+
 bool SuperLIO::kf_init(){
   static int imu_cout = 0;
   static V3 mean_gyro = V3::Zero();
   static V3 mean_acce = V3::Zero();
+  static V3 m2_gyro = V3::Zero();
+  static V3 m2_acce = V3::Zero();
+
+  auto reset_stats = [&](){
+    imu_cout = 0;
+    mean_gyro.setZero();
+    mean_acce.setZero();
+    m2_gyro.setZero();
+    m2_acce.setZero();
+  };
 
   for(auto& imu: measures_.imu){
     imu_cout ++;
-    mean_gyro += (imu.gyr - mean_gyro) / imu_cout;
-    mean_acce += (imu.acc - mean_acce) / imu_cout;
+    const V3 d_gyro = imu.gyr - mean_gyro;
+    const V3 d_acce = imu.acc - mean_acce;
+    mean_gyro += d_gyro / imu_cout;
+    mean_acce += d_acce / imu_cout;
+    m2_gyro += d_gyro.cwiseProduct(imu.gyr - mean_gyro);
+    m2_acce += d_acce.cwiseProduct(imu.acc - mean_acce);
   }
 
-  /// 100 Hz for 1 second.
+  /// ~50 samples: 0.5 s at 100 Hz.
   if(imu_cout < 50){
     return false;
+  }
+
+  if (mean_acce.norm() < kInitMinAcceNorm) {
+    LOG(ERROR) << RED << " ---> [SuperLIO]: mean accel norm " << mean_acce.norm()
+               << " is near zero, cannot align gravity. Check the IMU stream." << RESET;
+    reset_stats();
+    return false;
+  }
+
+  const double gyro_var = m2_gyro.sum() / (imu_cout - 1);
+  const double acce_var_rel =
+      m2_acce.sum() / (imu_cout - 1) / mean_acce.squaredNorm();
+  static int still_rejects = 0;
+  if (gyro_var > kInitMaxGyroVar || acce_var_rel > kInitMaxAcceVarRel) {
+    still_rejects++;
+    if (still_rejects < kInitMaxStillRejects) {
+      LOG(WARNING) << YELLOW << " ---> [SuperLIO]: IMU not stationary (gyro var "
+                   << gyro_var << ", rel accel var " << acce_var_rel
+                   << "), waiting for a still window (" << still_rejects << "/"
+                   << kInitMaxStillRejects << ")." << RESET;
+      reset_stats();
+      return false;
+    }
+    LOG(WARNING) << YELLOW << " ---> [SuperLIO]: no still window after "
+                 << still_rejects
+                 << " attempts, initializing from a moving window; gyro bias and"
+                    " imu_scale estimates may be degraded." << RESET;
   }
 
   V3 gravity = - mean_acce * g_gravity_norm / mean_acce.norm();
@@ -239,15 +293,17 @@ void SuperLIO::ApplyGroundRobotConstraint(){
   }
 
   auto state = kf_->GetSysState();
-  const M3 current_R = state.R.R_;
-  const scalar yaw = std::atan2(current_R(1, 0), current_R(0, 0));
+  // Level the robot base frame (state.R * g_odom_robo.R_), not the sensor
+  // frame, so a non-identity lidar-robot mounting rotation stays intact.
+  const M3 base_R = state.R.R_ * g_odom_robo.R_;
+  const scalar yaw = std::atan2(base_R(1, 0), base_R(0, 0));
   const M3 yaw_R =
       Eigen::AngleAxis<scalar>(yaw, V3::UnitZ()).toRotationMatrix();
 
-  state.R = SO3(yaw_R);
+  state.R = SO3(M3(yaw_R * g_odom_robo.R_.transpose()));
   state.v.z() = 0.0;
 
-  const V3 base_offset = yaw_R * (-g_odom_robo.R_ * g_odom_robo.t_);
+  const V3 base_offset = state.R.R_ * (-g_odom_robo.R_ * g_odom_robo.t_);
   state.p.z() = static_cast<scalar>(g_ground_robot_base_z) - base_offset.z();
   kf_->SetX(state);
 }
@@ -280,11 +336,34 @@ void SuperLIO::caceData(){
   static bool rm_PCD_dir = false;
   if(!rm_PCD_dir){
     rm_PCD_dir = true;
-    std::string cmd = "rm -rf " + g_save_map_dir + "/PCD";
-    [[maybe_unused]] int res;
-    res = system(cmd.c_str());
-    cmd = "mkdir -p " + g_save_map_dir + "/PCD";
-    res = system(cmd.c_str());
+    namespace fs = std::filesystem;
+    // lexically_normal keeps a trailing separator ("/x/maps/" stays as-is),
+    // which would fail the parent check below; strip the empty final element.
+    fs::path save_root = fs::path(g_save_map_dir).lexically_normal();
+    if (!save_root.has_filename()) {
+      save_root = save_root.parent_path();
+    }
+    const fs::path pcd_dir = (save_root / "PCD").lexically_normal();
+    // Only ever remove the "PCD" directory directly under the configured
+    // save_map root; refuse empty or relative roots (a mis-set save_map_dir
+    // must not delete an unrelated tree).
+    if (g_save_map_dir.empty() || !save_root.is_absolute() ||
+        pcd_dir.parent_path() != save_root) {
+      LOG(ERROR) << RED << " ---> Invalid save_map_dir '" << g_save_map_dir
+                 << "', refusing to reset the PCD cache directory." << RESET;
+    } else {
+      std::error_code ec;
+      fs::remove_all(pcd_dir, ec);
+      if (ec) {
+        LOG(ERROR) << RED << " ---> Failed to remove " << pcd_dir << ": "
+                   << ec.message() << RESET;
+      }
+      fs::create_directories(pcd_dir, ec);
+      if (ec) {
+        LOG(ERROR) << RED << " ---> Failed to create " << pcd_dir << ": "
+                   << ec.message() << RESET;
+      }
+    }
   }
 
   if (point_map_->size() > 0 && scan_wait_num >= g_pcd_save_interval) {
@@ -307,7 +386,17 @@ void SuperLIO::ProcessCaceMap(){
 
   LOG(INFO) << YELLOW << " ---> Merging PCD fragments in: " << pcd_folder << RESET;
 
+  if (!fs::exists(pcd_folder)) {
+    LOG(ERROR) << RED << " ---> PCD fragment folder does not exist: " << pcd_folder << RESET;
+    return;
+  }
+
   PointCloudType::Ptr merged_map(new PointCloudType());
+
+  // Downsample each fragment before merging so peak memory stays bounded on
+  // long runs; the final voxel pass below restores a consistent leaf size.
+  pcl::VoxelGrid<PointType> fragment_filter;
+  fragment_filter.setLeafSize(g_map_ds_size, g_map_ds_size, g_map_ds_size);
 
   int count = 0;
   for (const auto& entry : fs::directory_iterator(pcd_folder)) {
@@ -315,9 +404,16 @@ void SuperLIO::ProcessCaceMap(){
       entry.path().filename().string().find("scans_") != std::string::npos) {
       PointCloudType::Ptr tmp_cloud(new PointCloudType());
       if (pcl::io::loadPCDFile<PointType>(entry.path().string(), *tmp_cloud) == 0) {
-        *merged_map += *tmp_cloud;
+        if (g_if_filter) {
+          PointCloudType ds_cloud;
+          fragment_filter.setInputCloud(tmp_cloud);
+          fragment_filter.filter(ds_cloud);
+          *merged_map += ds_cloud;
+        } else {
+          *merged_map += *tmp_cloud;
+        }
         count++;
-        // LOG(INFO) << GREEN << " ---> Merged: " << entry.path().filename().string() 
+        // LOG(INFO) << GREEN << " ---> Merged: " << entry.path().filename().string()
         //           << "   size: " << tmp_cloud->size() << RESET;
       } else {
         LOG(WARNING) << RED << " ---> Failed to load: " << entry.path().string() << RESET;
@@ -341,11 +437,13 @@ void SuperLIO::ProcessCaceMap(){
     filtered_map = *merged_map;
   }
   
-  if (filtered_map.size() > 0) {
-    filtered_map.width = filtered_map.size();
-    filtered_map.height = 1;
-    filtered_map.is_dense = false;
+  if (filtered_map.empty()) {
+    LOG(ERROR) << RED << " ---> Merged map is empty, nothing to save." << RESET;
+    return;
   }
+  filtered_map.width = filtered_map.size();
+  filtered_map.height = 1;
+  filtered_map.is_dense = false;
 
   pcl::io::savePCDFileBinary(output_map_name, filtered_map);
 
@@ -407,7 +505,13 @@ void SuperLIO::Propagation_Undistort(){
   propagate_states_.emplace_back(kf_->GetDynamicState());
   kf_->SetObsTime(measures_.lidar.end_time);
   for (auto &imu : measures_.imu) {
-    kf_->Predict(imu);
+    // Only record states from samples that actually advanced the filter, so
+    // the interpolation below never sees duplicate timestamps.
+    if (kf_->Predict(imu)) {
+      propagate_states_.emplace_back(kf_->GetDynamicState());
+    }
+  }
+  if (kf_->PredictToObsTime()) {
     propagate_states_.emplace_back(kf_->GetDynamicState());
   }
 
@@ -418,9 +522,10 @@ void SuperLIO::Propagation_Undistort(){
   const V3  T_end_t = T_end.t_;
   const double start_time = measures_.lidar.start_time;
   auto& raw_pc = measures_.lidar.pc;
+  const bool has_intervals = propagate_states_.size() >= 2;
 
   std::size_t ptsize = raw_pc->points.size();
-  scan_undistort_full_->resize(ptsize); 
+  scan_undistort_full_->resize(ptsize);
 
   tbb::parallel_for(
   tbb::blocked_range<size_t>(0, ptsize),
@@ -431,7 +536,7 @@ void SuperLIO::Propagation_Undistort(){
       const auto& pt = raw_pc->points[idx];
       pt_full.intensity = pt.intensity;
       double query_time = start_time + pt.offset_time;
-      if (query_time > propagate_states_.back().time) {
+      if (!has_intervals || query_time > propagate_states_.back().time) {
         V3 raw(pt.x, pt.y, pt.z);
         V3 eigen_point = TLI_R * raw + TLI_t;
         pt_full.x = eigen_point[0];
@@ -450,7 +555,7 @@ void SuperLIO::Propagation_Undistort(){
       auto match_iter_n = std::next(match_iter);
       double dt = match_iter_n->time - match_iter->time;
       double tau = query_time - match_iter->time;
-      double s   = tau / dt;
+      double s = dt > 0.0 ? std::clamp(tau / dt, 0.0, 1.0) : 0.0;
       R_h = match_iter->R;
       R_t = match_iter_n->R;
       p_h = match_iter->p;
@@ -482,22 +587,28 @@ struct ThreadACC{
   ThreadACC(): HTVH(M6d::Zero()), HTVr(V6d::Zero()) {}
 };
 
+// Lidar point-to-plane information weight = 1/sigma^2, sigma ~= 0.032 m.
+constexpr double kLidarPointWeight = 1000.0;
+
 
 void SuperLIO::Observe(){
   size_t ptsize = ds_undistort_->size();
   backend_observation_terms_.clear();
-  
-  static std::vector<float> _lengths;
+
   points_body_v3_.resize(ptsize);
-  _lengths.resize(ptsize);
+  point_lengths_.resize(ptsize);
+  abcd_vec_.resize(ptsize);
+  effect_mask_.resize(ptsize);
+  effect_knn_mask_.resize(ptsize);
+  effect_knn_idxs_.resize(ptsize);
 
   effect_knn_num_ = ptsize;
-  std::iota(effect_knn_idxs_.begin(), effect_knn_idxs_.begin() + ptsize, 0);
+  std::iota(effect_knn_idxs_.begin(), effect_knn_idxs_.end(), 0);
 
   for(size_t i = 0; i < ptsize; ++i){
     const auto& point_body_pcl = ds_undistort_->points[i];
     points_body_v3_[i] = V3(point_body_pcl.x, point_body_pcl.y, point_body_pcl.z);
-    _lengths[i] = points_body_v3_[i].norm();
+    point_lengths_[i] = points_body_v3_[i].norm();
   }
 
   ivox_->reset_max_group();
@@ -536,9 +647,9 @@ void SuperLIO::Observe(){
 
           auto& abcd = abcd_vec_[idx];
           scalar error;
-          effect_mask_[idx] = compute_error(abcd, point_world, _lengths[idx], error);
+          effect_mask_[idx] = compute_error(abcd, point_world, point_lengths_[idx], error);
           if(!effect_mask_[idx]) continue;
-          
+
           {
             V3d normvec(abcd[0], abcd[1], abcd[2]);
             V3d nb = R_transpose * normvec;
@@ -546,9 +657,9 @@ void SuperLIO::Observe(){
             V6d J;
             J.head<3>() = point_body_d.cross(nb);
             J.tail<3>() = normvec;
-      
-            local_acc.HTVH += J * 1000 * J.transpose();
-            local_acc.HTVr -= J * 1000 * error;
+
+            local_acc.HTVH += J * kLidarPointWeight * J.transpose();
+            local_acc.HTVr -= J * kLidarPointWeight * error;
           }
         }
     });
@@ -620,18 +731,41 @@ void SuperLIO::Output(){
           ds_undistort_,
           effect_knn_num_,
           data_wrapper_->getLatestImuData()});
-      
+
+      std::vector<MapObservation> map_observations;
+      SE3 map_to_odom;
+      bool has_map_to_odom = false;
+      if (g_backend_use_localization_factor && prior_map_localization_ &&
+          prior_map_localization_->enabled()) {
+        prior_map_localization_->takeMapObservations(map_observations);
+        has_map_to_odom = data_wrapper_->get_map_to_odom(map_to_odom);
+      }
+
+      // The result must not be written back into the ESKF: UpdateMap() has
+      // already committed this scan to the odom-frame voxel map at the
+      // pre-optimization pose, so feeding an optimized pose back would desync
+      // the filter from the map. Backend corrections exist only in the map
+      // layer (optimized path, optional map->odom refinement below).
       BackendResult backend_result =
           adagraph_backend_->processKeyframe(
-              frame, current_pose, backend_observation_terms_, state.timestamp);
-      
-      // 正确更新ESKF状态（使用SetX而不是直接覆盖）
-      if (backend_result.optimized) {
-        auto sys_state = kf_->GetSysState();
-        sys_state.R = backend_result.optimized_pose.R_;
-        sys_state.p = backend_result.optimized_pose.t_;
-        kf_->SetX(sys_state);
-        state = kf_->GetNavState();
+              frame, current_pose, backend_observation_terms_, state.timestamp,
+              map_observations, has_map_to_odom ? &map_to_odom : nullptr);
+
+      if (g_backend_use_localization_factor &&
+          !backend_result.optimized_trajectory.empty()) {
+        data_wrapper_->pub_backend_optimized_path(
+            backend_result.optimized_trajectory);
+      }
+
+      if (g_backend_drive_map_to_odom && backend_result.optimized &&
+          prior_map_localization_ && prior_map_localization_->enabled()) {
+        // T_map_odom = T_map_keyframe * T_odom_keyframe^-1, fed through the
+        // localization module's existing jump gate and smoothing (no second
+        // TF publish path).
+        const SE3 derived_map_to_odom =
+            backend_result.optimized_pose * current_pose.inverse();
+        prior_map_localization_->submitBackendMapToOdom(derived_map_to_odom,
+                                                        current_pose);
       }
     } else {
       adagraph_backend_->noteNonKeyframe();
@@ -649,6 +783,21 @@ void SuperLIO::Output(){
     prior_map_localization_->submit(state.timestamp, ds_undistort_, odom_lidar);
   }
 
+  // The occupancy grid feeds navigation: keep its cadence and input cloud
+  // independent of the visualization throttling below.
+  static int grid_count = -1;
+  const int grid_step = std::max(1, g_grid_update_step);
+  grid_count++;
+  if(grid_count % grid_step == 0){
+    grid_count = 0;
+    // With dense output configured, feed the full undistorted scan: at fine
+    // grid resolutions the voxel-downsampled cloud leaves gaps between hits
+    // that raycast decay would erode into observed surfaces.
+    const CloudPtr& grid_pc =
+        g_visual_dense ? scan_undistort_full_ : ds_undistort_;
+    data_wrapper_->update_occupancy_grid_from_body_cloud(grid_pc, state);
+  }
+
   static int count = -1;
   const int pub_step = std::max(1, g_pub_step);
   count++;
@@ -657,10 +806,9 @@ void SuperLIO::Output(){
   }
   count = 0;
 
-  const CloudPtr& body_pc =
-      g_visual_dense ? scan_undistort_full_ : ds_undistort_;
-
   if(g_visual_map){
+    const CloudPtr& body_pc =
+        g_visual_dense ? scan_undistort_full_ : ds_undistort_;
     Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();
     transformation.block<3, 3>(0, 0) = state.R.R_.cast<float>();
     transformation.block<3, 1>(0, 3) = state.p.cast<float>();
@@ -668,8 +816,6 @@ void SuperLIO::Output(){
     pcl::transformPointCloud(*body_pc, *world_pc, transformation);
     data_wrapper_->pub_cloud_world(world_pc, state.timestamp);
   }
-
-  data_wrapper_->update_occupancy_grid_from_body_cloud(body_pc, state);
 }
 
 void SuperLIO::printTimeRecord(){

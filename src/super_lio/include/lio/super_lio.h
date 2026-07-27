@@ -3,6 +3,7 @@
 #ifndef SUPER_LIO_H_
 #define SUPER_LIO_H_
 
+#include <cstdint>
 #include <queue>
 #include <vector>
 #include <iostream>
@@ -79,8 +80,11 @@ protected:
 
   std::size_t effect_knn_num_ = 0;
   BASIC::VV3 points_world_v3_, points_body_v3_;
-  alignas(64) bool effect_mask_[20000] = {false};
-  alignas(64) bool effect_knn_mask_[20000] = {false};
+  // Sized to the current downsampled scan in Observe(); uint8_t (not
+  // std::vector<bool>) so concurrent TBB writes to distinct indices are safe.
+  std::vector<uint8_t> effect_mask_;
+  std::vector<uint8_t> effect_knn_mask_;
+  std::vector<float> point_lengths_;
   std::vector<int> effect_knn_idxs_;
   std::vector<std::pair<BASIC::M6, BASIC::V6>> backend_observation_terms_;
   std::vector<std::array<double, 4>> abcd_vec_;

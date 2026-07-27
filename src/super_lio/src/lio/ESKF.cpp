@@ -1,5 +1,7 @@
 #include "lio/ESKF.h"
 
+#include <glog/logging.h>
+
 using namespace BASIC;
 
 namespace LI2Sup{
@@ -45,24 +47,6 @@ static inline M3d RightJacobianSO3(const V3& ang_vel, const scalar& dt) {
   }
   Jr = M3d::Identity() - A * K + B * K2;
   return Jr;
-}
-
-
-/// left jacobian
-M3d A_matrix(const V3 & v){
-  M3d res;
-  double squaredNorm = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
-	double norm = std::sqrt(squaredNorm);
-	if(norm < 1e-6){
-		res = M3d::Identity();
-	}
-	else{
-    M3d K;
-    K << 0.0, -v[2], v[1], v[2], 0.0, -v[0], -v[1], v[0], 0.0;
-		res = M3d::Identity() + (1 - std::cos(norm)) / squaredNorm * K 
-        + (1 - std::sin(norm) / norm) / squaredNorm * K * K;
-	}
-  return res;
 }
 
 
@@ -197,18 +181,23 @@ bool ESKF::Predict(const IMUData& imu) {
     last_imu_ = imu;
     return false;
   }
-  
-  current_time_ = imu.secs;
 
   double dt;
   if(last_imu_time_ < last_obs_time_){
     dt = imu.secs - last_obs_time_;
-  }else if (imu.secs > current_obs_time_){
-    dt = current_obs_time_ - last_imu_time_;
-    current_time_ = current_obs_time_;
   }else{
     dt = imu.secs - last_imu_time_;
   }
+
+  if(dt < 0 || dt > 0.2){
+    LOG(WARNING) << "[ESKF]: skip abnormal IMU interval dt = " << dt << " s";
+    current_time_ = imu.secs;
+    last_imu_time_ = imu.secs;
+    last_imu_ = imu;
+    return false;
+  }
+
+  current_time_ = imu.secs;
 
   V3 acc = 0.5 * (imu.acc + last_imu_.acc);
   acc = imu_scale_ * acc;
@@ -231,8 +220,8 @@ bool ESKF::Predict(const IMUData& imu) {
   F_W f_w = F_W::Zero();
   f_w.template block<3, 3>(0, 0) = - Jr_dt;
   f_w.template block<3, 3>(6, 3) = - R_dt;                 // v -> na
-  f_w.template block<3, 3>(9, 6) = M3::Identity() * dt;    // ba
-  f_w.template block<3, 3>(12, 9) = M3::Identity() * dt;   // bg
+  f_w.template block<3, 3>(9, 6) = M3::Identity() * dt;    // bg
+  f_w.template block<3, 3>(12, 9) = M3::Identity() * dt;   // ba
 
   P_ = f_x * P_ * f_x.transpose() + f_w * Q_ * f_w.transpose();
 
@@ -244,6 +233,19 @@ bool ESKF::Predict(const IMUData& imu) {
   last_imu_time_ = imu.secs;
   last_imu_ = imu;
   return true;
+}
+
+
+bool ESKF::PredictToObsTime() {
+  // sync_measure never delivers IMU samples past the scan end, so the state
+  // stops at the last sample; integrate the remaining tail up to
+  // current_obs_time_ with the last sample held constant.
+  if (last_imu_time_ < 0 || current_obs_time_ <= last_imu_time_) {
+    return false;
+  }
+  IMUData imu = last_imu_;
+  imu.secs = current_obs_time_;
+  return Predict(imu);
 }
 
 

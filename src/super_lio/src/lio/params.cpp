@@ -28,10 +28,8 @@ namespace LI2Sup{
   float  g_blind2;
   float  g_maxrange2;
   int    g_filter_rate;
-  bool   g_enable_downsample;
   float  g_voxel_fliter_size;
 
-  int    g_imu_type;
   V3     g_imu_acc_scale = V3::Ones();
   V3     g_imu_gyro_scale = V3::Ones();
   double g_gravity_norm = 9.7946;
@@ -49,31 +47,18 @@ namespace LI2Sup{
   float       g_ivox_resolution = 0.5;
 
   /// kf
-  int g_kf_type = 1;                // 1: ESKF, 2: InESKF
   int g_kf_max_iterations = 4;
-  bool g_kf_align_gravity = true;
   double g_kf_quit_eps;
-
-  /// submap 
-  double g_submap_resolution;
-  int    g_submap_capacity;
 
   /// output
   bool g_2_robot    = false;
-  bool g_2_plan_env_world = false; 
-  bool g_2_plan_env_body  = false;
-  bool g_2_ml_map = false;
   bool g_visual_map = true;
   bool g_visual_dense = false;
   int  g_pub_step;
-
-  /// for planner
-  bool g_planner_enable;
+  int  g_grid_update_step = 1;
 
   bool g_ground_robot_planar_constraint = false;
   double g_ground_robot_base_z = 0.0;
-
-  ResidualType g_residual_type = PROB;
 
   /// for relocation
   bool g_update_map = false;
@@ -115,5 +100,17 @@ namespace LI2Sup{
   double g_prior_map_loc_lost_fitness = 2.0;
   double g_prior_map_loc_smooth_translation_alpha = 0.1;
   double g_prior_map_loc_smooth_rotation_alpha = 0.1;
+  double g_prior_map_loc_kiss_retry_cooldown_sec = 5.0;
+  int g_prior_map_loc_kiss_retry_max_backoff = 6;
+  int g_prior_map_loc_max_delta_rejections = 10;
+  float g_prior_map_loc_crop_grid_cell_size = 10.0f;
+
+  /// AdaGraph backend: prior-map localization results as unary factors.
+  bool g_backend_use_localization_factor = false;
+  bool g_backend_drive_map_to_odom = false;
+  double g_backend_loc_factor_sigma_t = 0.1;
+  double g_backend_loc_factor_sigma_r = 0.02;
+  double g_backend_loc_factor_fitness_ref = 0.1;
+  double g_backend_loc_factor_max_time_diff = 0.15;
 
 }

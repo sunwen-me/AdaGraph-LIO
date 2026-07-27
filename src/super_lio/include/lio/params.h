@@ -45,10 +45,8 @@ namespace LI2Sup{
   extern float g_blind2;
   extern float g_maxrange2;
   extern int   g_filter_rate;
-  extern bool  g_enable_downsample;
   extern float g_voxel_fliter_size;
 
-  extern int    g_imu_type;
   extern BASIC::V3 g_imu_acc_scale;
   extern BASIC::V3 g_imu_gyro_scale;
   extern double g_gravity_norm;
@@ -66,39 +64,19 @@ namespace LI2Sup{
   extern float       g_ivox_resolution;
   
   /// kf
-  extern int g_kf_type;            // 1: ESKF, 2: InESKF.
   extern int g_kf_max_iterations;
-  extern bool g_kf_align_gravity;
   extern double g_kf_quit_eps;
 
-  /// submaps
-  extern double g_submap_resolution;
-  extern int    g_submap_capacity;
-  
-  /// output  
+  /// output
   extern bool g_2_robot;
-  extern bool g_2_plan_env_world;
-  extern bool g_2_plan_env_body;
-  extern bool g_2_ml_map;
   extern bool g_visual_map;
   extern bool g_visual_dense;
   extern int  g_pub_step;
-
-  /// for planner
-  extern bool g_planner_enable;
+  extern int  g_grid_update_step;  // occupancy grid update cadence in frames (1 = every frame)
 
   /// Optional ground robot constraint for 2D navigation/simulation.
   extern bool g_ground_robot_planar_constraint;
   extern double g_ground_robot_base_z;
-
-  /// Define the hybrid residual formulation.
-  enum ResidualType{
-    PROB = 1,     // Probabilistic residual
-    P2P  = 2,     // Point-to-plane residual
-    MIX  = 3      // Hybrid residual (probabilistic + point-to-plane)
-  };
-  extern ResidualType g_residual_type;
-
 
   /// for relocation
   extern bool g_update_map;
@@ -140,6 +118,19 @@ namespace LI2Sup{
   extern double g_prior_map_loc_lost_fitness;
   extern double g_prior_map_loc_smooth_translation_alpha;
   extern double g_prior_map_loc_smooth_rotation_alpha;
+  extern double g_prior_map_loc_kiss_retry_cooldown_sec;
+  extern int g_prior_map_loc_kiss_retry_max_backoff;
+  extern int g_prior_map_loc_max_delta_rejections;
+  extern float g_prior_map_loc_crop_grid_cell_size;
+
+  /// AdaGraph backend: prior-map localization results as unary factors.
+  /// Experimental, not yet validated on a real robot.
+  extern bool g_backend_use_localization_factor;
+  extern bool g_backend_drive_map_to_odom;
+  extern double g_backend_loc_factor_sigma_t;
+  extern double g_backend_loc_factor_sigma_r;
+  extern double g_backend_loc_factor_fitness_ref;
+  extern double g_backend_loc_factor_max_time_diff;
 
 }
 

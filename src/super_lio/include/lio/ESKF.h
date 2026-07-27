@@ -13,8 +13,7 @@ class ESKF {
 public:
   using Ptr   = std::shared_ptr<ESKF>;
                                                   //         0 3 6 9 12 15
-  using STATE = Eigen::Matrix<BASIC::scalar, 18, 1>;     //Flatten: R p v bg ba g. 
-  using STATE_DOF = Eigen::Matrix<BASIC::scalar, 17, 1>; //Flatten: R p v bg ba g_2.
+  using STATE = Eigen::Matrix<BASIC::scalar, 18, 1>;     //Flatten: R p v bg ba g.
   using NOISE = Eigen::Matrix<BASIC::scalar, 12, 12>;
   using COV   = Eigen::Matrix<BASIC::scalar, 18, 18>;
   using F_X   = Eigen::Matrix<BASIC::scalar, 18, 18>;
@@ -53,6 +52,10 @@ public:
                             const BASIC::V3& gravity = BASIC::V3(0, 0, -9.8));
 
   bool Predict(const IMUData& imu);
+
+  /// Finish propagating the tail interval [last integrated time, current_obs_time_]
+  /// by holding the last IMU sample. Returns true if the state advanced.
+  bool PredictToObsTime();
 
   using ObsFunc = std::function<void(const KFState& kf_state, BASIC::M6& HT_Vinv_H, BASIC::V6& HT_Vinv_r)>;
   bool UpdateObserve(ObsFunc obs);
