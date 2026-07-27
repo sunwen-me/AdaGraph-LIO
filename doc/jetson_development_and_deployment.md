@@ -93,12 +93,15 @@ source install/setup.bash
 
 1. 拒绝覆盖 Jetson 上未提交的本地修改。
 2. 从 `origin` 获取标签。
-3. 切换到指定的稳定版本。
-4. 清理 CMake 缓存并重新编译 Super-LIO 依赖链。
+3. 把当前部署的 ref 记录到 `log/jetson_previous_ref`。
+4. 切换到指定的稳定版本。
+5. 清理 CMake 缓存并重新编译 Super-LIO 依赖链。
+6. 如果编译失败，自动切回记录的 ref 并重新编译，恢复到部署前的可用状态。
 
 ## 6. 回滚
 
-新版本出现问题时，切回上一个标签：
+新版本出现问题时，切回上一个标签（上一次部署的 ref 也记录在
+`log/jetson_previous_ref` 中）：
 
 ```bash
 cd ~/AdaGraph-LIO

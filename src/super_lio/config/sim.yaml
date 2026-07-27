@@ -15,10 +15,8 @@
     lio.sensor.blind: 0.3
     lio.sensor.maxrange: 40.0
     lio.sensor.filter_rate: 1
-    lio.sensor.enable_downsample: true
     lio.sensor.voxel_fliter_size: 0.3
     lio.sensor.gravity_norm: 9.8
-    lio.sensor.imu_type: 0
     lio.sensor.imu_acc_scale: [1.0, 1.0, 1.0]
     lio.sensor.imu_gyro_scale: [1.0, 1.0, 1.0]
     lio.sensor.imu_na: 0.05
@@ -36,22 +34,14 @@
     lio.hash_map.hash_capacity: 100000000
     lio.hash_map.vox_resolution: 0.3
 
-    lio.kf.kf_type: 0
     lio.kf.kf_max_iterations: 4
-    lio.kf.kf_align_gravity: true
     lio.kf.kf_quit_eps: 0.001
 
-    lio.submap.submap_resolution: 0.3
-    lio.submap.submap_capacity: 1000000
-
     lio.output.robot: false
-    lio.output.plan_env_world: false
-    lio.output.plan_env_body: false
-    lio.output.ml_map: false
-    lio.output.planner: false
     lio.output.map: true
     lio.output.dense: true
     lio.output.pub_step: 2
+    lio.output.grid_update_step: 1
 
     lio.ground_robot.planar_constraint: true
     lio.ground_robot.base_z: 0.0
@@ -90,16 +80,31 @@
     lio.prior_map_localization.smooth_translation_alpha: 0.1
     lio.prior_map_localization.smooth_rotation_alpha: 0.1
 
+    # AdaGraph backend: fuse accepted prior-map registrations as absolute
+    # factors in the pose graph and publish /lio/backend/optimized_path.
+    # Experimental, not yet validated on a real robot.
+    lio.backend.use_localization_factor: false
+    # Feed the backend-refined map->odom into the localization smoothing
+    # channel (requires use_localization_factor).
+    lio.backend.drive_map_to_odom: false
+    lio.backend.loc_factor_sigma_t: 0.1        # base translation sigma [m]
+    lio.backend.loc_factor_sigma_r: 0.02       # base rotation sigma [rad]
+    lio.backend.loc_factor_fitness_ref: 0.1    # fitness that doubles the sigmas
+    lio.backend.loc_factor_max_time_diff: 0.15 # observation-to-keyframe gate [s]
+
     lio.occupancy_grid.enable: true
     lio.occupancy_grid.topic: "/map"
     lio.occupancy_grid.frame_id: "map"
     lio.occupancy_grid.resolution: 0.05
-    lio.occupancy_grid.z_min: 0.15
-    lio.occupancy_grid.z_max: 2.0
+    # z band is relative to the sensor/body origin. The IMU sits 0.735 m above
+    # the base (extrinsic.odom_robo z), so [-0.585, 1.265] keeps obstacles
+    # between 0.15 m and 2.0 m above the ground in the grid.
+    lio.occupancy_grid.z_min: -0.585
+    lio.occupancy_grid.z_max: 1.265
     lio.occupancy_grid.publish_period: 1.0
     lio.occupancy_grid.map_padding: 1.0
     lio.occupancy_grid.inflation_radius: 0.0
-    lio.occupancy_grid.use_unknown: false
+    lio.occupancy_grid.use_unknown: true
     lio.occupancy_grid.reset_on_global_map: true
     lio.occupancy_grid.ground_filter.enable: true
     lio.occupancy_grid.ground_filter.cell_size_x: 1.0
@@ -109,6 +114,9 @@
     lio.occupancy_grid.ground_filter.ground_inlier_threshold: 0.125
     lio.occupancy_grid.ground_filter.centroid_search_radius: 5.0
     lio.occupancy_grid.ground_filter.dist_to_ground: 0.0
+    # Sensor height above ground (extrinsic.odom_robo z); fallback ground
+    # height when the auto seed region has too few points.
+    lio.occupancy_grid.ground_filter.sensor_mount_height: 0.735
     lio.occupancy_grid.ground_filter.auto_dist_to_ground: true
     lio.occupancy_grid.ground_filter.auto_seed_radius: 2.0
     lio.occupancy_grid.ground_filter.auto_ground_quantile: 0.1

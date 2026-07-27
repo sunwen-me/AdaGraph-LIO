@@ -238,7 +238,7 @@ Super-LIO 当前点云
 当先验地图定位已经启用时，可以手动触发一次全局重定位：
 
 ```bash
-ros2 service call /super_lio_node/manual_relocalization std_srvs/srv/Trigger {}
+ros2 service call /lio/relocalization/trigger std_srvs/srv/Trigger {}
 ```
 
 这个 service 只置位请求，真正的 KISS-Matcher 初始化/恢复在 Super-LIO 主流程提交局部子地图后执行。
@@ -470,3 +470,44 @@ ros2 daemon start
 5. 检查 map -> odom -> base_footprint
 6. 在 RViz 里给 Nav2 goal
 ```
+
+## 14. 本轮修复新增参数
+
+传感器 / 缓冲（ROS 接入层）：
+
+| 参数 | 类型 / 默认 | 说明 |
+| --- | --- | --- |
+| `lio.sensor.time_offset` | double / 0.0 | `imu_time += offset`，把 IMU 时戳对齐到 LiDAR 时钟（秒） |
+| `lio.ros.lidar_buffer_capacity` | int / 100 | LiDAR 缓冲最大帧数，超限丢最旧并节流告警 |
+| `lio.ros.imu_buffer_capacity` | int / 2000 | IMU 缓冲最大样本数，超限丢最旧 |
+| `lio.output.path_max_poses` | int / 5000 | `/lio/path` 最大位姿数，FIFO 淘汰 |
+| `lio.output.global_map_pub_period` | double / 10.0 | 全局地图重发检查周期（秒），仅 dirty / 新订阅时重发 |
+| `lio.output.grid_update_step` | int / 1 | 占据栅格更新间隔（帧），1 = 每帧；与 `pub_step` 可视化节流解耦 |
+
+占据栅格：
+
+| 参数 | 类型 / 默认 | 说明 |
+| --- | --- | --- |
+| `lio.occupancy_grid.max_range` | double / 30.0 | 扫描入格的 3D 射程门控（米） |
+| `lio.occupancy_grid.max_extent` | double / 400.0 | 栅格每轴总跨度上限（米），超限拒绝扩张并节流告警 |
+| `lio.occupancy_grid.raycast.enable` | bool / true | 沿传感器→命中点射线雕刻 free 空间 |
+| `lio.occupancy_grid.raycast.max_ray_length` | double / 15.0 | 超过此 2D 长度的射线不做 free 雕刻（命中仍记录） |
+| `lio.occupancy_grid.use_unknown` | bool / true | 未观测格发布为 unknown（-1）；raycast 后 free 为真实观测 |
+| `lio.occupancy_grid.ground_filter.sensor_mount_height` | double / 0.5 | 传感器/体轴原点离地高度（米），auto dist_to_ground 失败时的地面回退；按实机标定填写 |
+
+**语义变化**：`lio.occupancy_grid.z_min` / `z_max` 现为**相对传感器/体轴原点**的
+高度带（不再是世界系绝对高度）。传感器离地 h 米时，想保留离地
+[a, b] 米的障碍应配 `z_min: a - h`、`z_max: b - h`（sim.yaml 中
+h = 0.735，故配为 [-0.585, 1.265]）。
+
+先验地图定位：
+
+| 参数 | 类型 / 默认 | 说明 |
+| --- | --- | --- |
+| `lio.prior_map_localization.kiss_retry_cooldown_sec` | double / 5.0 | LOST 期间 KISS 重试基础冷却（秒） |
+| `lio.prior_map_localization.kiss_retry_max_backoff` | int / 6 | 连续失败时冷却倍率上限（最长 5×6 = 30 s） |
+| `lio.prior_map_localization.max_delta_rejections` | int / 10 | 连续一致的跳变门拒绝达到该数即转 LOST 触发 KISS |
+| `lio.prior_map_localization.crop_grid_cell_size` | double / 10.0 | 先验地图裁剪索引桶尺寸（米） |
+
+后端定位因子（实验特性）参数 `lio.backend.*` 见 sim.yaml /
+livox_360.yaml 内注释。
