@@ -109,18 +109,10 @@ bool SuperLIOReLoc::map_init(){
   std::vector<int> useless_indices;
   pcl::removeNaNFromPointCloud(*point_map_, *point_map_, useless_indices);
 
-  VV3 point_map_v3;
-  point_map_v3.reserve(point_map_->size());
-  for(const auto& point: *point_map_){
-    V3 pt(point.x, point.y, point.z);
-    point_map_v3.push_back(pt);
-  }
-
-  ivox_->insert(point_map_v3);
-
+  /// ivox_ is filled in kf_init() once the global match is known, because the
+  /// frame the filter tracks in depends on the relocalization result.
   LOG(INFO) << GREEN << " ---> Load map success. File: " << map_name << RESET;
   LOG(INFO) << GREEN << " ---> Map size: " << point_map_->size() << RESET;
-  ivox_->printInfo();
 
   pcd_loaded = true;
 
@@ -266,21 +258,41 @@ bool SuperLIOReLoc::kf_init(){
   auto state = kf_->GetSysState();
   const M3 matched_map_imu_R = init_guess_T.block<3, 3>(0, 0);
   const V3 matched_map_imu_t = init_guess_T.block<3, 1>(0, 3);
+  const SE3 matched_map_imu(matched_map_imu_R, matched_map_imu_t);
 
+  /// The filter matches scans against ivox_, so the prior map must be
+  /// inserted in the frame the filter tracks in.
+  SE3 ivox_from_map;
   if (g_nav2_tf_enable && g_nav2_publish_map_to_odom) {
-    const M3 matched_map_base_R = matched_map_imu_R * g_odom_robo.R_;
-    const V3 matched_map_base_t =
-        matched_map_imu_R * (-g_odom_robo.R_ * g_odom_robo.t_) + matched_map_imu_t;
-    const SE3 map_base(matched_map_base_R, matched_map_base_t);
-    data_wrapper_->set_map_to_odom(map_base);
+    /// Track in a local odom frame (same origin convention as the mapping
+    /// node) and express the matched pose entirely in map->odom, so the TF
+    /// chain map->odom->base_link applies the initial pose exactly once.
+    const SE3 odom_imu(rot, g_odom_robo.t_);
+    const SE3 map_to_odom = matched_map_imu * odom_imu.inverse();
+    data_wrapper_->set_map_to_odom(map_to_odom);
+    state.R = SO3(odom_imu.R_);
+    state.p = odom_imu.t_;
+    ivox_from_map = map_to_odom.inverse();
+  } else {
+    /// Without a map->odom publisher the filter tracks directly in the map
+    /// frame, so the published odometry is the map-frame pose.
+    state.R = SO3(matched_map_imu_R);
+    state.p = matched_map_imu_t;
   }
-
-  /// Keep the filter state in the loaded map frame; the TF layer converts it to odom.
-  state.R = SO3(matched_map_imu_R);
-  state.p = matched_map_imu_t;
   state.timestamp = -1.0;
   kf_->SetX(state);
   sys_init_pose_ = kf_->GetSE3();
+
+  {
+    VV3 point_map_v3;
+    point_map_v3.reserve(point_map_->size());
+    for(const auto& point: *point_map_){
+      const V3 pt(point.x, point.y, point.z);
+      point_map_v3.push_back(ivox_from_map * pt);
+    }
+    ivox_->insert(point_map_v3);
+    ivox_->printInfo();
+  }
 
   {
     point_map_->clear();
@@ -295,13 +307,16 @@ bool SuperLIOReLoc::kf_init(){
 
 
 void SuperLIOReLoc::UpdateMap() {
-  if(g_update_map){
-    static int __update_delay = 100;
-    if(__update_delay > 0){
-      __update_delay--;
-      std::cout << "Update map Delay: " << 100 - __update_delay << " %" << std::endl;
-      return;
-    }
+  /// update_map=false freezes the prior map: no scans are inserted into ivox_.
+  if(!g_update_map){
+    return;
+  }
+
+  static int __update_delay = 100;
+  if(__update_delay > 0){
+    __update_delay--;
+    std::cout << "Update map Delay: " << 100 - __update_delay << " %" << std::endl;
+    return;
   }
 
   const size_t ptsize = ds_undistort_->size();

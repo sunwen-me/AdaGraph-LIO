@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
+#include <iomanip>
 #include <limits>
 #include <utility>
 
@@ -38,6 +40,19 @@ SE3 fromMatrix4f(const Eigen::Matrix4f& mat)
   return SE3(R, t);
 }
 
+std::uint64_t voxelKey(int cx, int cy, int cz)
+{
+  /// 21 bits per axis with a +2^20 offset covers +-2^20 cells.
+  const auto pack = [](int c) {
+    return static_cast<std::uint64_t>(static_cast<std::int64_t>(c) + (1 << 20)) &
+           0x1FFFFF;
+  };
+  return pack(cx) | (pack(cy) << 21) | (pack(cz) << 42);
+}
+
+/// Backend observation queue bound; overflow drops the oldest entry.
+constexpr std::size_t kMapObservationQueueCap = 8;
+
 }  // namespace
 
 PriorMapLocalization::PriorMapLocalization() = default;
@@ -53,6 +68,12 @@ bool PriorMapLocalization::init(MapToOdomCallback map_to_odom_callback)
   if (!enabled_) {
     return false;
   }
+
+  lost_kiss_retry_cooldown_sec_ =
+      std::max(0.0, g_prior_map_loc_kiss_retry_cooldown_sec);
+  lost_kiss_retry_max_backoff_ = std::max(1, g_prior_map_loc_kiss_retry_max_backoff);
+  max_delta_gate_rejections_ = std::max(1, g_prior_map_loc_max_delta_rejections);
+  prior_map_grid_cell_size_ = std::max(1.0f, g_prior_map_loc_crop_grid_cell_size);
 
   map_to_odom_callback_ = std::move(map_to_odom_callback);
   if (!map_to_odom_callback_) {
@@ -138,6 +159,57 @@ void PriorMapLocalization::requestGlobalRelocalization()
             << RESET;
 }
 
+void PriorMapLocalization::takeMapObservations(std::vector<MapObservation>& out)
+{
+  out.clear();
+  std::lock_guard<std::mutex> lock(observation_mutex_);
+  out.assign(map_observations_.begin(), map_observations_.end());
+  map_observations_.clear();
+}
+
+bool PriorMapLocalization::submitBackendMapToOdom(const SE3& candidate,
+                                                  const SE3& odom_lidar)
+{
+  if (!enabled_) {
+    return false;
+  }
+
+  SE3 current_map_odom;
+  {
+    std::lock_guard<std::mutex> lock(map_to_odom_state_mutex_);
+    if (!has_map_to_odom_) {
+      /// The backend may only refine an existing map->odom; initialization
+      /// stays with the KISS/VGICP pipeline.
+      return false;
+    }
+    current_map_odom = map_to_odom_;
+  }
+
+  /// Same delta gate as passQualityGate, measured at the current robot pose.
+  /// Rejections are not counted towards the LOST transition: that logic
+  /// belongs to the registration pipeline on the worker thread.
+  const SE3 delta =
+      (current_map_odom * odom_lidar).inverse() * (candidate * odom_lidar);
+  const double trans = delta.t_.norm();
+  const double rot_deg = rotationAngleDeg(delta);
+  if (trans > g_prior_map_loc_max_translation ||
+      rot_deg > g_prior_map_loc_max_rotation_deg) {
+    LOG(WARNING) << YELLOW
+                 << " ---> [PriorMapLocalization]: backend map->odom rejected"
+                    " by jump gate, dt: " << trans
+                 << ", drot_deg: " << rot_deg << RESET;
+    return false;
+  }
+
+  const SE3 smoothed = smoothMapToOdom(candidate, false);
+  {
+    std::lock_guard<std::mutex> lock(map_to_odom_state_mutex_);
+    map_to_odom_ = smoothed;
+  }
+  map_to_odom_callback_(smoothed);
+  return true;
+}
+
 std::string PriorMapLocalization::resolveMapPath() const
 {
   if (!g_prior_map_loc_map_file.empty()) {
@@ -164,6 +236,7 @@ bool PriorMapLocalization::loadPriorMap()
 
   prior_map_ = downsampleCloud(raw_map, g_prior_map_loc_map_voxel_size);
   prior_map_->is_dense = false;
+  buildPriorMapGrid();
   LOG(INFO) << GREEN
             << " ---> [PriorMapLocalization]: loaded prior map: " << map_path
             << ", raw points: " << raw_map->size()
@@ -178,6 +251,23 @@ bool PriorMapLocalization::loadPriorMap()
             << RESET;
 #endif
   return true;
+}
+
+void PriorMapLocalization::buildPriorMapGrid()
+{
+  prior_map_grid_.clear();
+  if (!prior_map_ || prior_map_->empty()) {
+    return;
+  }
+
+  const double cell = std::max(1.0f, prior_map_grid_cell_size_);
+  for (std::uint32_t i = 0; i < prior_map_->size(); ++i) {
+    const auto& point = prior_map_->points[i];
+    const int cx = static_cast<int>(std::floor(point.x / cell));
+    const int cy = static_cast<int>(std::floor(point.y / cell));
+    const int cz = static_cast<int>(std::floor(point.z / cell));
+    prior_map_grid_[voxelKey(cx, cy, cz)].push_back(i);
+  }
 }
 
 void PriorMapLocalization::workerLoop()
@@ -218,7 +308,13 @@ void PriorMapLocalization::process(Frame&& frame)
     return;
   }
 
-  SE3 predicted_map_odom = has_map_to_odom_ ? map_to_odom_ : SE3();
+  SE3 predicted_map_odom;
+  bool had_map_to_odom = false;
+  {
+    std::lock_guard<std::mutex> lock(map_to_odom_state_mutex_);
+    had_map_to_odom = has_map_to_odom_;
+    predicted_map_odom = has_map_to_odom_ ? map_to_odom_ : SE3();
+  }
   bool used_kiss_initial_guess = false;
   bool force_jump = false;
   bool should_run_kiss = false;
@@ -230,11 +326,13 @@ void PriorMapLocalization::process(Frame&& frame)
         1, std::min(g_prior_map_loc_min_kiss_frames, g_prior_map_loc_local_frames));
     const bool has_enough_kiss_frames =
         local_frames_odom_.size() >= static_cast<std::size_t>(min_kiss_frames);
+    const bool lost_kiss_due =
+        state_ == State::LOST && lostKissRetryDue(frame.timestamp);
 
     if (!has_enough_kiss_frames &&
         (manual_kiss_requested ||
          (state_ == State::UNINITIALIZED && !startup_kiss_attempted_) ||
-         (state_ == State::LOST && !lost_kiss_attempted_))) {
+         lost_kiss_due)) {
       if (manual_kiss_requested) {
         manual_kiss_requested_.store(true, std::memory_order_release);
       }
@@ -248,9 +346,14 @@ void PriorMapLocalization::process(Frame&& frame)
     } else if (state_ == State::UNINITIALIZED && !startup_kiss_attempted_) {
       startup_kiss_attempted_ = true;
       should_run_kiss = true;
-    } else if (state_ == State::LOST && !lost_kiss_attempted_) {
+    } else if (lost_kiss_due) {
       lost_kiss_attempted_ = true;
+      last_lost_kiss_time_ = frame.timestamp;
       should_run_kiss = true;
+      LOG(INFO) << YELLOW
+                << " ---> [PriorMapLocalization]: LOST, retrying KISS relocalization"
+                << " (consecutive failures: " << lost_kiss_failures_ << ")."
+                << RESET;
     }
   }
 
@@ -262,13 +365,18 @@ void PriorMapLocalization::process(Frame&& frame)
       LOG(INFO) << GREEN
                 << " ---> [PriorMapLocalization]: KISS-Matcher supplied coarse map->odom."
                 << RESET;
-    } else if (!has_map_to_odom_) {
-      LOG(WARNING) << YELLOW
-                   << " ---> [PriorMapLocalization]: KISS-Matcher one-shot initial pose failed; waiting for manual trigger."
-                   << RESET;
-      return;
+    } else {
+      if (state_ == State::LOST) {
+        ++lost_kiss_failures_;
+      }
+      if (!had_map_to_odom) {
+        LOG(WARNING) << YELLOW
+                     << " ---> [PriorMapLocalization]: KISS-Matcher one-shot initial pose failed; waiting for manual trigger."
+                     << RESET;
+        return;
+      }
     }
-  } else if (!has_map_to_odom_ && state_ == State::UNINITIALIZED) {
+  } else if (!had_map_to_odom && state_ == State::UNINITIALIZED) {
     LOG(WARNING) << YELLOW
                  << " ---> [PriorMapLocalization]: no initial map->odom; waiting for manual trigger."
                  << RESET;
@@ -286,9 +394,9 @@ void PriorMapLocalization::process(Frame&& frame)
   }
 
   RegistrationResult result =
-      runRegistration(local_submap, cropped_map, predicted_map_odom, frame.odom_lidar);
+      runRegistration(local_submap, cropped_map, predicted_map_odom);
 
-  if (!passQualityGate(result)) {
+  if (!passQualityGate(result, frame.odom_lidar, force_jump)) {
     if (result.fitness > g_prior_map_loc_lost_fitness) {
       enterLost();
     }
@@ -297,16 +405,44 @@ void PriorMapLocalization::process(Frame&& frame)
 
   const bool jump = force_jump || state_ == State::UNINITIALIZED || state_ == State::LOST;
   const SE3 output_map_odom = smoothMapToOdom(result.map_odom, jump);
-  map_to_odom_ = output_map_odom;
-  has_map_to_odom_ = true;
+  {
+    std::lock_guard<std::mutex> lock(map_to_odom_state_mutex_);
+    map_to_odom_ = output_map_odom;
+    has_map_to_odom_ = true;
+  }
   state_ = State::TRACKING;
   lost_kiss_attempted_ = false;
+  lost_kiss_failures_ = 0;
+  delta_gate_rejections_ = 0;
+  has_rejected_candidate_ = false;
   map_to_odom_callback_(output_map_odom);
+
+  if (g_backend_use_localization_factor) {
+    /// Queue the raw (unsmoothed) registration for the backend: the unary
+    /// factor wants the measured absolute pose, smoothing only serves TF.
+    MapObservation obs;
+    obs.timestamp = frame.timestamp;
+    obs.map_lidar = result.map_odom * frame.odom_lidar;
+    obs.fitness = result.fitness;
+    std::lock_guard<std::mutex> lock(observation_mutex_);
+    map_observations_.push_back(obs);
+    while (map_observations_.size() > kMapObservationQueueCap) {
+      map_observations_.pop_front();
+      if ((++overflow_dropped_observations_ % 32) == 1) {
+        LOG(WARNING) << YELLOW
+                     << " ---> [PriorMapLocalization]: backend observation"
+                        " queue overflow, total dropped: "
+                     << overflow_dropped_observations_ << RESET;
+      }
+    }
+  }
 
   LOG(INFO) << GREEN
             << " ---> [PriorMapLocalization]: accepted map->odom, fitness: "
             << result.fitness << (jump ? " (jump)" : " (smooth)")
-            << (used_kiss_initial_guess ? " [KISS init]" : "") << RESET;
+            << (used_kiss_initial_guess ? " [KISS init]" : "")
+            << ", stamp: " << std::fixed << std::setprecision(3)
+            << frame.timestamp << RESET;
 }
 
 void PriorMapLocalization::appendLocalFrame(const Frame& frame)
@@ -355,12 +491,31 @@ CloudPtr PriorMapLocalization::cropPriorMap(const SE3& predicted_map_lidar) cons
   cropped->reserve(std::min<std::size_t>(
       prior_map_->size(), static_cast<std::size_t>(std::max(1, g_prior_map_loc_max_target_points))));
 
-  for (const auto& point : prior_map_->points) {
-    const double dx = static_cast<double>(point.x) - center.x();
-    const double dy = static_cast<double>(point.y) - center.y();
-    const double dz = static_cast<double>(point.z) - center.z();
-    if (dx * dx + dy * dy + dz * dz <= radius2) {
-      cropped->push_back(point);
+  const double cell = std::max(1.0f, prior_map_grid_cell_size_);
+  const int min_cx = static_cast<int>(std::floor((center.x() - radius) / cell));
+  const int max_cx = static_cast<int>(std::floor((center.x() + radius) / cell));
+  const int min_cy = static_cast<int>(std::floor((center.y() - radius) / cell));
+  const int max_cy = static_cast<int>(std::floor((center.y() + radius) / cell));
+  const int min_cz = static_cast<int>(std::floor((center.z() - radius) / cell));
+  const int max_cz = static_cast<int>(std::floor((center.z() + radius) / cell));
+
+  for (int cx = min_cx; cx <= max_cx; ++cx) {
+    for (int cy = min_cy; cy <= max_cy; ++cy) {
+      for (int cz = min_cz; cz <= max_cz; ++cz) {
+        const auto it = prior_map_grid_.find(voxelKey(cx, cy, cz));
+        if (it == prior_map_grid_.end()) {
+          continue;
+        }
+        for (const std::uint32_t idx : it->second) {
+          const auto& point = prior_map_->points[idx];
+          const double dx = static_cast<double>(point.x) - center.x();
+          const double dy = static_cast<double>(point.y) - center.y();
+          const double dz = static_cast<double>(point.z) - center.z();
+          if (dx * dx + dy * dy + dz * dz <= radius2) {
+            cropped->push_back(point);
+          }
+        }
+      }
     }
   }
 
@@ -412,8 +567,7 @@ CloudPtr PriorMapLocalization::limitCloudSize(const CloudPtr& cloud, int max_poi
 PriorMapLocalization::RegistrationResult PriorMapLocalization::runRegistration(
     const CloudPtr& source_odom,
     const CloudPtr& target_map,
-    const SE3& initial_map_odom,
-    const SE3& odom_lidar) const
+    const SE3& initial_map_odom) const
 {
   RegistrationResult result;
   if (!source_odom || source_odom->empty() || !target_map || target_map->empty()) {
@@ -428,8 +582,8 @@ PriorMapLocalization::RegistrationResult PriorMapLocalization::runRegistration(
   vgicp.setInputSource(source_odom);
   vgicp.setInputTarget(target_map);
   vgicp.setMaximumIterations(std::max(1, g_prior_map_loc_max_iterations));
-  vgicp.setMaxCorrespondenceDistance(
-      std::max(1.0f, g_prior_map_loc_local_voxel_size * 8.0f));
+  /// FastVGICP ignores setMaxCorrespondenceDistance; correspondences are
+  /// gated by the voxel resolution set below.
   vgicp.setTransformationEpsilon(1e-4);
   vgicp.setEuclideanFitnessEpsilon(1e-4);
   vgicp.setResolution(std::max(0.1f, g_prior_map_loc_local_voxel_size));
@@ -457,13 +611,15 @@ PriorMapLocalization::RegistrationResult PriorMapLocalization::runRegistration(
     return result;
   }
 
-  const SE3 candidate_map_odom = fromMatrix4f(final_transformation);
-  const SE3 T_map_lidar_vgicp = candidate_map_odom * odom_lidar;
-  result.map_odom = T_map_lidar_vgicp * odom_lidar.inverse();
+  /// The source cloud is already expressed in the odom frame, so the aligned
+  /// transformation is directly map->odom.
+  result.map_odom = fromMatrix4f(final_transformation);
   return result;
 }
 
-bool PriorMapLocalization::passQualityGate(const RegistrationResult& result) const
+bool PriorMapLocalization::passQualityGate(const RegistrationResult& result,
+                                           const SE3& odom_lidar,
+                                           bool force_jump)
 {
   if (!result.converged || !std::isfinite(result.fitness) ||
       result.fitness > g_prior_map_loc_max_fitness) {
@@ -473,11 +629,29 @@ bool PriorMapLocalization::passQualityGate(const RegistrationResult& result) con
     return false;
   }
 
-  if (state_ != State::TRACKING || !has_map_to_odom_) {
+  SE3 current_map_odom;
+  bool has_current_map_odom = false;
+  {
+    std::lock_guard<std::mutex> lock(map_to_odom_state_mutex_);
+    has_current_map_odom = has_map_to_odom_;
+    current_map_odom = map_to_odom_;
+  }
+
+  if (state_ != State::TRACKING || !has_current_map_odom) {
     return true;
   }
 
-  const SE3 delta = map_to_odom_.inverse() * result.map_odom;
+  if (force_jump) {
+    /// Manual/KISS-initialized attempts exist to correct arbitrarily large
+    /// errors; only the fitness gate applies to them.
+    return true;
+  }
+
+  /// Measure the correction at the current robot pose instead of at the odom
+  /// origin, so a small heading correction far from the origin is not read as
+  /// a large translation.
+  const SE3 delta =
+      (current_map_odom * odom_lidar).inverse() * (result.map_odom * odom_lidar);
   const double trans = delta.t_.norm();
   const double rot_deg = rotationAngleDeg(delta);
   if (trans > g_prior_map_loc_max_translation ||
@@ -485,15 +659,64 @@ bool PriorMapLocalization::passQualityGate(const RegistrationResult& result) con
     LOG(WARNING) << YELLOW
                  << " ---> [PriorMapLocalization]: rejected by jump gate, dt: "
                  << trans << ", drot_deg: " << rot_deg << RESET;
+    noteDeltaGateRejection(result.map_odom, odom_lidar);
     return false;
   }
 
   return true;
 }
 
+void PriorMapLocalization::noteDeltaGateRejection(const SE3& candidate_map_odom,
+                                                 const SE3& odom_lidar)
+{
+  bool consistent = false;
+  if (has_rejected_candidate_) {
+    const SE3 delta = (last_rejected_map_odom_ * odom_lidar).inverse() *
+                      (candidate_map_odom * odom_lidar);
+    consistent = delta.t_.norm() <= g_prior_map_loc_max_translation &&
+                 rotationAngleDeg(delta) <= g_prior_map_loc_max_rotation_deg;
+  }
+
+  delta_gate_rejections_ = consistent ? delta_gate_rejections_ + 1 : 1;
+  last_rejected_map_odom_ = candidate_map_odom;
+  has_rejected_candidate_ = true;
+
+  if (delta_gate_rejections_ >= max_delta_gate_rejections_) {
+    LOG(WARNING) << YELLOW
+                 << " ---> [PriorMapLocalization]: " << delta_gate_rejections_
+                 << " consecutive consistent jump-gate rejections; assuming the"
+                    " localization reference drifted, entering LOST to force"
+                    " KISS relocalization."
+                 << RESET;
+    delta_gate_rejections_ = 0;
+    has_rejected_candidate_ = false;
+    enterLost();
+  }
+}
+
+bool PriorMapLocalization::lostKissRetryDue(double now_sec) const
+{
+  if (!lost_kiss_attempted_) {
+    return true;
+  }
+  /// Repeated failures stretch the cooldown instead of stopping retries.
+  const int backoff =
+      std::min(lost_kiss_failures_ + 1, std::max(1, lost_kiss_retry_max_backoff_));
+  return now_sec - last_lost_kiss_time_ >=
+         lost_kiss_retry_cooldown_sec_ * static_cast<double>(backoff);
+}
+
 SE3 PriorMapLocalization::smoothMapToOdom(const SE3& candidate, bool jump) const
 {
-  if (jump || !has_map_to_odom_) {
+  SE3 previous;
+  bool has_previous = false;
+  {
+    std::lock_guard<std::mutex> lock(map_to_odom_state_mutex_);
+    has_previous = has_map_to_odom_;
+    previous = map_to_odom_;
+  }
+
+  if (jump || !has_previous) {
     return candidate;
   }
 
@@ -501,9 +724,9 @@ SE3 PriorMapLocalization::smoothMapToOdom(const SE3& candidate, bool jump) const
   const double rot_alpha = clamp01(g_prior_map_loc_smooth_rotation_alpha);
 
   const V3 t =
-      (1.0 - trans_alpha) * map_to_odom_.t_ + trans_alpha * candidate.t_;
+      (1.0 - trans_alpha) * previous.t_ + trans_alpha * candidate.t_;
 
-  Quat q_old(map_to_odom_.R_);
+  Quat q_old(previous.R_);
   Quat q_new(candidate.R_);
   q_old.normalize();
   q_new.normalize();
@@ -519,12 +742,11 @@ void PriorMapLocalization::enterLost()
   if (state_ != State::LOST) {
     state_ = State::LOST;
     lost_kiss_attempted_ = false;
+    lost_kiss_failures_ = 0;
     LOG(WARNING) << YELLOW
                  << " ---> [PriorMapLocalization]: state changed to LOST."
                  << RESET;
-    return;
   }
-  state_ = State::LOST;
 }
 
 double PriorMapLocalization::rotationAngleDeg(const SE3& delta)
