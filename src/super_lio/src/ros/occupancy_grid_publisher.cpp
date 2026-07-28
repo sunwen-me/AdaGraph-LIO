@@ -218,12 +218,14 @@ void OccupancyGridPublisher::resetFromCloud(
   // scan segmenter needs a sensor-centric cloud, so the map-frame variant is
   // used here; its ground-relative band replaces the absolute z band.
   BASIC::CloudPtr insert_cloud = cloud;
+  BASIC::CloudPtr ground_cloud;
   bool ground_relative_filtered = false;
   if (ground_filter_.enabled()) {
     // z_max_ is relative to the sensor origin; the segmenter wants a ceiling
     // above local ground, so add the sensor's height above ground.
     const auto segmented = ground_filter_.segmentWorldMap(
         cloud, z_max_ + ground_filter_.sensorMountHeight());
+    ground_cloud = segmented.ground;
     insert_cloud = segmented.non_ground;
     ground_relative_filtered = true;
   }
@@ -234,6 +236,14 @@ void OccupancyGridPublisher::resetFromCloud(
     if (reset_on_global_map_) {
       observed_cells_.clear();
       has_bounds_ = false;
+    }
+    if (ground_relative_filtered &&
+        ground_cloud && !ground_cloud->empty()) {
+      // Static prior maps have no per-scan sensor origins for ray casting.
+      // Ground returns still provide direct free-space observations. Insert
+      // them first so non-ground hits below override free evidence when both
+      // project into the same 2D cell.
+      insertFreeCloudLocked(ground_cloud);
     }
     if (insert_cloud && !insert_cloud->empty()) {
       insertCloudLocked(insert_cloud, !ground_relative_filtered);
@@ -338,6 +348,32 @@ void OccupancyGridPublisher::insertCloudLocked(
         applyScoreLocked(cellKey(cell_x + dx, cell_y + dy), kHitScore);
       }
     }
+  }
+}
+
+void OccupancyGridPublisher::insertFreeCloudLocked(
+    const BASIC::CloudPtr& cloud) {
+  std::unordered_set<std::int64_t> free_cells;
+  free_cells.reserve(cloud->size());
+
+  for (const auto& point : cloud->points) {
+    if (!std::isfinite(point.x) ||
+        !std::isfinite(point.y) ||
+        !std::isfinite(point.z)) {
+      continue;
+    }
+
+    std::int32_t cell_x = 0;
+    std::int32_t cell_y = 0;
+    if (!toCellIndex(point.x, resolution_, cell_x) ||
+        !toCellIndex(point.y, resolution_, cell_y)) {
+      continue;
+    }
+    free_cells.insert(cellKey(cell_x, cell_y));
+  }
+
+  for (const auto key : free_cells) {
+    applyScoreLocked(key, -kMissScore);
   }
 }
 

@@ -44,6 +44,7 @@ private:
                           const Eigen::Matrix4f& body_to_world,
                           const rclcpp::Time& stamp);
   void insertCloudLocked(const BASIC::CloudPtr& cloud, bool apply_height_filter);
+  void insertFreeCloudLocked(const BASIC::CloudPtr& cloud);
   void insertScanLocked(const BASIC::CloudPtr& world_cloud,
                         const Eigen::Vector3f& sensor_origin);
   void applyScoreLocked(std::int64_t key, int delta);
