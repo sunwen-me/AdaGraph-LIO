@@ -42,7 +42,7 @@
     lio.nav2_tf.publish_map_to_odom: true
     lio.nav2_tf.map_frame: "map"
     lio.nav2_tf.odom_frame: "odom"
-    lio.nav2_tf.base_frame: "base_link"
+    lio.nav2_tf.base_frame: "base_footprint"
     lio.nav2_tf.imu_frame: "imu"
 
     lio.kiss_matcher.enable: false

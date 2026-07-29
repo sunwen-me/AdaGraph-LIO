@@ -29,7 +29,9 @@
                               1.0, 0.0, 0.0,
                               0.0, -1.0, 0.0,
                               0.0, 0.0, -1.0]
-    lio.extrinsic.odom_robo: [0.143, 0.0, 0.735, 0.0, 0.0, 0.0]
+    # Mid360 pose in base_footprint. The drive axle is 0.196 m ahead of
+    # the chassis origin while the sensor is 0.143 m ahead of it.
+    lio.extrinsic.odom_robo: [-0.053, 0.0, 0.735, 0.0, 0.0, 0.0]
 
     lio.hash_map.hash_capacity: 100000000
     lio.hash_map.vox_resolution: 0.3
