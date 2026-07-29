@@ -115,4 +115,30 @@ TEST_F(GroundSegmentationFilterTest, SmallPriorMapStillRemovesGround) {
   EXPECT_EQ(result.non_ground->size(), 10u);
 }
 
+TEST_F(GroundSegmentationFilterTest, DropsPointsAboveNavigationHeight) {
+  auto filter = makeFilter();
+  BASIC::CloudPtr cloud(new BASIC::PointCloudType());
+  for (int i = 0; i < 40; ++i) {
+    BASIC::PointType floor;
+    floor.x = 0.1f + 0.015f * i;
+    floor.y = 0.2f;
+    floor.z = 0.0f;
+    cloud->push_back(floor);
+  }
+
+  BASIC::PointType local_ceiling;
+  local_ceiling.x = 0.5f;
+  local_ceiling.y = 0.2f;
+  local_ceiling.z = 3.0f;
+  cloud->push_back(local_ceiling);
+
+  BASIC::PointType isolated_ceiling = local_ceiling;
+  isolated_ceiling.x = 10.0f;
+  cloud->push_back(isolated_ceiling);
+
+  const auto result = filter.segmentWorldMap(cloud, 2.0);
+  EXPECT_EQ(result.ground->size(), 40u);
+  EXPECT_TRUE(result.non_ground->empty());
+}
+
 }  // namespace

@@ -375,17 +375,22 @@ GroundSegmentationFilter::Result GroundSegmentationFilter::segmentWorldMap(
     const auto ground_height = reference_ground(*key);
     if (!ground_height) {
       // No trustworthy floor model nearby: retaining a possible obstacle is
-      // safer for navigation than silently deleting it.
-      result.non_ground->push_back(point);
+      // safer for navigation than silently deleting it. Still reject points
+      // clearly above the configured navigation band; otherwise isolated
+      // ceiling returns can expand a static 2D map by tens of metres.
+      const double height =
+          static_cast<double>(point.z) - global_ground_seed;
+      if (height <= max_height_above_ground) {
+        result.non_ground->push_back(point);
+      }
       continue;
     }
 
     const double height = static_cast<double>(point.z) - *ground_height;
-    if (height > options_.ground_inlier_threshold &&
-        height <= max_height_above_ground) {
-      result.non_ground->push_back(point);
-    } else {
+    if (height <= options_.ground_inlier_threshold) {
       result.ground->push_back(point);
+    } else if (height <= max_height_above_ground) {
+      result.non_ground->push_back(point);
     }
   }
 
