@@ -92,6 +92,15 @@ def generate_launch_description():
     )
     prior_map_file = LaunchConfiguration('prior_map_file')
 
+    declare_localization_voxel_size_arg = DeclareLaunchArgument(
+        'localization_voxel_size',
+        default_value='0.5',
+        description='Voxel size used by KISS and prior-map registration'
+    )
+    localization_voxel_size = LaunchConfiguration(
+        'localization_voxel_size'
+    )
+
     super_lio_node = Node(
         package='super_lio',
         executable='super_lio_node',
@@ -107,8 +116,17 @@ def generate_launch_description():
                     use_prior_map, value_type=bool
                 ),
                 'lio.prior_map_localization.map_file': prior_map_file,
+                'lio.prior_map_localization.map_voxel_size': ParameterValue(
+                    localization_voxel_size, value_type=float
+                ),
+                'lio.prior_map_localization.local_voxel_size': ParameterValue(
+                    localization_voxel_size, value_type=float
+                ),
                 'lio.kiss_matcher.enable': ParameterValue(
                     use_prior_map, value_type=bool
+                ),
+                'lio.kiss_matcher.voxel_size': ParameterValue(
+                    localization_voxel_size, value_type=float
                 ),
             },
         ],
@@ -170,6 +188,7 @@ def generate_launch_description():
     ld.add_action(declare_lidar_type_arg)
     ld.add_action(declare_use_prior_map_arg)
     ld.add_action(declare_prior_map_file_arg)
+    ld.add_action(declare_localization_voxel_size_arg)
     ld.add_action(base_tf_node)
     ld.add_action(sensor_tf_node)
     ld.add_action(super_lio_node)
