@@ -30,7 +30,9 @@
                               0.0, 0.0, 1.0]
     # Mid360/internal-IMU pose in base_footprint. The drive axle is 0.196 m
     # ahead of the chassis origin while the sensor is 0.143 m ahead of it.
-    lio.extrinsic.odom_robo: [-0.053, 0.0, 0.735, 0.0, 0.0, 0.0]
+    # The real Mid-360 is mounted upside down: its X axis remains forward,
+    # while Y and Z are reversed relative to the robot base.
+    lio.extrinsic.odom_robo: [-0.053, 0.0, 0.735, 180.0, 0.0, 0.0]
 
     lio.hash_map.hash_capacity: 2000000
     lio.hash_map.vox_resolution: 0.5

@@ -61,6 +61,13 @@ def generate_launch_description():
     )
     sensor_z = LaunchConfiguration('sensor_z')
 
+    declare_sensor_roll_arg = DeclareLaunchArgument(
+        'sensor_roll',
+        default_value='3.141592653589793',
+        description='Livox mounting roll in radians; pi for upside-down mounting'
+    )
+    sensor_roll = LaunchConfiguration('sensor_roll')
+
     declare_rviz_arg = DeclareLaunchArgument(
         'rviz',
         default_value='true',
@@ -170,7 +177,7 @@ def generate_launch_description():
             '--x', sensor_x,
             '--y', '0.0',
             '--z', sensor_z,
-            '--roll', '0.0',
+            '--roll', sensor_roll,
             '--pitch', '0.0',
             '--yaw', '0.0',
             '--frame-id', 'base_link',
@@ -194,6 +201,7 @@ def generate_launch_description():
     ld.add_action(declare_sensor_frame_arg)
     ld.add_action(declare_sensor_x_arg)
     ld.add_action(declare_sensor_z_arg)
+    ld.add_action(declare_sensor_roll_arg)
     ld.add_action(declare_rviz_arg)
     ld.add_action(declare_lidar_type_arg)
     ld.add_action(declare_use_prior_map_arg)
