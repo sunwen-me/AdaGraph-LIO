@@ -101,6 +101,13 @@ def generate_launch_description():
         'localization_voxel_size'
     )
 
+    declare_kiss_use_quatro_arg = DeclareLaunchArgument(
+        'kiss_use_quatro',
+        default_value='false',
+        description='Use gravity-aligned Quatro rotation estimation in KISS'
+    )
+    kiss_use_quatro = LaunchConfiguration('kiss_use_quatro')
+
     super_lio_node = Node(
         package='super_lio',
         executable='super_lio_node',
@@ -127,6 +134,9 @@ def generate_launch_description():
                 ),
                 'lio.kiss_matcher.voxel_size': ParameterValue(
                     localization_voxel_size, value_type=float
+                ),
+                'lio.kiss_matcher.use_quatro': ParameterValue(
+                    kiss_use_quatro, value_type=bool
                 ),
             },
         ],
@@ -189,6 +199,7 @@ def generate_launch_description():
     ld.add_action(declare_use_prior_map_arg)
     ld.add_action(declare_prior_map_file_arg)
     ld.add_action(declare_localization_voxel_size_arg)
+    ld.add_action(declare_kiss_use_quatro_arg)
     ld.add_action(base_tf_node)
     ld.add_action(sensor_tf_node)
     ld.add_action(super_lio_node)
