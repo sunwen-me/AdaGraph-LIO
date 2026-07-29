@@ -115,6 +115,27 @@ def generate_launch_description():
     )
     kiss_use_quatro = LaunchConfiguration('kiss_use_quatro')
 
+    declare_save_map_arg = DeclareLaunchArgument(
+        'save_map',
+        default_value='false',
+        description='Accumulate and save a PCD map when the node stops'
+    )
+    save_map = LaunchConfiguration('save_map')
+
+    declare_save_map_dir_arg = DeclareLaunchArgument(
+        'save_map_dir',
+        default_value='map',
+        description='Output directory for mapping; absolute paths are preferred'
+    )
+    save_map_dir = LaunchConfiguration('save_map_dir')
+
+    declare_map_name_arg = DeclareLaunchArgument(
+        'map_name',
+        default_value='map.pcd',
+        description='Final PCD filename'
+    )
+    map_name = LaunchConfiguration('map_name')
+
     super_lio_node = Node(
         package='super_lio',
         executable='super_lio_node',
@@ -145,6 +166,11 @@ def generate_launch_description():
                 'lio.kiss_matcher.use_quatro': ParameterValue(
                     kiss_use_quatro, value_type=bool
                 ),
+                'lio.map.save_map': ParameterValue(
+                    save_map, value_type=bool
+                ),
+                'lio.map.save_map_dir': save_map_dir,
+                'lio.map.map_name': map_name,
             },
         ],
         arguments=['--ros-args', '--log-level', 'info']
@@ -208,6 +234,9 @@ def generate_launch_description():
     ld.add_action(declare_prior_map_file_arg)
     ld.add_action(declare_localization_voxel_size_arg)
     ld.add_action(declare_kiss_use_quatro_arg)
+    ld.add_action(declare_save_map_arg)
+    ld.add_action(declare_save_map_dir_arg)
+    ld.add_action(declare_map_name_arg)
     ld.add_action(base_tf_node)
     ld.add_action(sensor_tf_node)
     ld.add_action(super_lio_node)
