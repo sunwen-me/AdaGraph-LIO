@@ -78,6 +78,20 @@ def generate_launch_description():
     )
     lidar_type = LaunchConfiguration('lidar_type')
 
+    declare_use_prior_map_arg = DeclareLaunchArgument(
+        'use_prior_map',
+        default_value='false',
+        description='Enable prior-map localization and KISS initialization'
+    )
+    use_prior_map = LaunchConfiguration('use_prior_map')
+
+    declare_prior_map_file_arg = DeclareLaunchArgument(
+        'prior_map_file',
+        default_value='',
+        description='Absolute path to the prior PCD map'
+    )
+    prior_map_file = LaunchConfiguration('prior_map_file')
+
     super_lio_node = Node(
         package='super_lio',
         executable='super_lio_node',
@@ -88,7 +102,14 @@ def generate_launch_description():
             {
                 'lio.sensor.lidar_type': ParameterValue(
                     lidar_type, value_type=int
-                )
+                ),
+                'lio.prior_map_localization.enable': ParameterValue(
+                    use_prior_map, value_type=bool
+                ),
+                'lio.prior_map_localization.map_file': prior_map_file,
+                'lio.kiss_matcher.enable': ParameterValue(
+                    use_prior_map, value_type=bool
+                ),
             },
         ],
         arguments=['--ros-args', '--log-level', 'info']
@@ -147,6 +168,8 @@ def generate_launch_description():
     ld.add_action(declare_sensor_z_arg)
     ld.add_action(declare_rviz_arg)
     ld.add_action(declare_lidar_type_arg)
+    ld.add_action(declare_use_prior_map_arg)
+    ld.add_action(declare_prior_map_file_arg)
     ld.add_action(base_tf_node)
     ld.add_action(sensor_tf_node)
     ld.add_action(super_lio_node)
