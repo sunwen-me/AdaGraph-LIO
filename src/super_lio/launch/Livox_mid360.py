@@ -13,6 +13,54 @@ def generate_launch_description():
     config_yaml = os.path.join(pkg_super_lio, 'config', 'livox_360.yaml')
     rviz_config_file = os.path.join(pkg_super_lio, 'rviz', 'lio.rviz')
 
+    declare_publish_base_tf_arg = DeclareLaunchArgument(
+        'publish_base_tf',
+        default_value='true',
+        description=(
+            'Publish base_footprint to base_link; disable when a robot '
+            'description already publishes this transform'
+        )
+    )
+    publish_base_tf = LaunchConfiguration('publish_base_tf')
+
+    declare_publish_sensor_tf_arg = DeclareLaunchArgument(
+        'publish_sensor_tf',
+        default_value='true',
+        description=(
+            'Publish base_link to the Livox message frame; disable when a '
+            'robot description already publishes this transform'
+        )
+    )
+    publish_sensor_tf = LaunchConfiguration('publish_sensor_tf')
+
+    declare_base_link_x_arg = DeclareLaunchArgument(
+        'base_link_x',
+        default_value='-0.196',
+        description='base_link x offset from the front drive axle, in metres'
+    )
+    base_link_x = LaunchConfiguration('base_link_x')
+
+    declare_sensor_frame_arg = DeclareLaunchArgument(
+        'sensor_frame',
+        default_value='livox_frame',
+        description='Frame ID used by the Livox point cloud and IMU messages'
+    )
+    sensor_frame = LaunchConfiguration('sensor_frame')
+
+    declare_sensor_x_arg = DeclareLaunchArgument(
+        'sensor_x',
+        default_value='0.143',
+        description='Livox x offset from base_link, in metres'
+    )
+    sensor_x = LaunchConfiguration('sensor_x')
+
+    declare_sensor_z_arg = DeclareLaunchArgument(
+        'sensor_z',
+        default_value='0.735',
+        description='Livox z offset from base_link, in metres'
+    )
+    sensor_z = LaunchConfiguration('sensor_z')
+
     declare_rviz_arg = DeclareLaunchArgument(
         'rviz',
         default_value='true',
@@ -46,6 +94,42 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
 
+    base_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='base_footprint_to_base_link',
+        output='screen',
+        arguments=[
+            '--x', base_link_x,
+            '--y', '0.0',
+            '--z', '0.0',
+            '--roll', '0.0',
+            '--pitch', '0.0',
+            '--yaw', '0.0',
+            '--frame-id', 'base_footprint',
+            '--child-frame-id', 'base_link',
+        ],
+        condition=IfCondition(publish_base_tf)
+    )
+
+    sensor_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='base_link_to_livox',
+        output='screen',
+        arguments=[
+            '--x', sensor_x,
+            '--y', '0.0',
+            '--z', sensor_z,
+            '--roll', '0.0',
+            '--pitch', '0.0',
+            '--yaw', '0.0',
+            '--frame-id', 'base_link',
+            '--child-frame-id', sensor_frame,
+        ],
+        condition=IfCondition(publish_sensor_tf)
+    )
+
     rviz2_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -55,8 +139,16 @@ def generate_launch_description():
     )
 
     ld = LaunchDescription()
+    ld.add_action(declare_publish_base_tf_arg)
+    ld.add_action(declare_publish_sensor_tf_arg)
+    ld.add_action(declare_base_link_x_arg)
+    ld.add_action(declare_sensor_frame_arg)
+    ld.add_action(declare_sensor_x_arg)
+    ld.add_action(declare_sensor_z_arg)
     ld.add_action(declare_rviz_arg)
     ld.add_action(declare_lidar_type_arg)
+    ld.add_action(base_tf_node)
+    ld.add_action(sensor_tf_node)
     ld.add_action(super_lio_node)
     ld.add_action(rviz2_node)
 
