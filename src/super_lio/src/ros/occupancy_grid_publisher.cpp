@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <exception>
 #include <string_view>
 #include <utility>
 
@@ -44,6 +45,16 @@ OccupancyGridPublisher::SourcePolicy ParseSourcePolicy(
 }  // namespace
 
 OccupancyGridPublisher::~OccupancyGridPublisher() {
+  if (grid_artifact_enabled_) {
+    const auto snapshot = latest_snapshot_.load(std::memory_order_acquire);
+    std::string frame_id;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      frame_id = frame_id_;
+    }
+    enqueueGridArtifact(snapshot, frame_id, true);
+  }
+  stopGridArtifactWorker();
   stopSnapshotWorker();
 }
 
@@ -67,6 +78,20 @@ void OccupancyGridPublisher::setup(
   node.declare_parameter<std::string>("lio.occupancy_grid.source", source);
   node.get_parameter("lio.occupancy_grid.source", source);
   source_policy_ = ParseSourcePolicy(source, node.get_logger());
+
+  node.declare_parameter<bool>("lio.occupancy_grid.artifact.enable", false);
+  node.get_parameter("lio.occupancy_grid.artifact.enable",
+                     grid_artifact_enabled_);
+  std::string artifact_yaml_path;
+  node.declare_parameter<std::string>(
+      "lio.occupancy_grid.artifact.yaml_path", artifact_yaml_path);
+  node.get_parameter("lio.occupancy_grid.artifact.yaml_path",
+                     artifact_yaml_path);
+  node.declare_parameter<double>(
+      "lio.occupancy_grid.artifact.write_period_s", 5.0);
+  node.get_parameter("lio.occupancy_grid.artifact.write_period_s",
+                     grid_artifact_period_s_);
+  grid_artifact_period_s_ = std::max(0.1, grid_artifact_period_s_);
 
   node.declare_parameter<double>("lio.occupancy_grid.resolution", 0.1);
   node.get_parameter("lio.occupancy_grid.resolution",
@@ -217,6 +242,27 @@ void OccupancyGridPublisher::setup(
     return;
   }
 
+  if (grid_artifact_enabled_) {
+    grid_artifact_yaml_path_ = std::filesystem::path(artifact_yaml_path);
+    if (source_policy_ != SourcePolicy::kOnline) {
+      RCLCPP_ERROR(
+          node.get_logger(),
+          "Occupancy grid artifact requires lio.occupancy_grid.source=online; "
+          "Snapshot products do not retain scan-origin free-space evidence.");
+      grid_artifact_enabled_ = false;
+    } else if (grid_artifact_yaml_path_.empty() ||
+               !grid_artifact_yaml_path_.is_absolute() ||
+               (grid_artifact_yaml_path_.extension() != ".yaml" &&
+                grid_artifact_yaml_path_.extension() != ".yml")) {
+      RCLCPP_ERROR(
+          node.get_logger(),
+          "Occupancy grid artifact yaml_path must be an absolute .yaml/.yml "
+          "file path; durable artifact saving is disabled.");
+      grid_artifact_enabled_ = false;
+      grid_artifact_yaml_path_.clear();
+    }
+  }
+
   builder_ = std::make_unique<adagraph::mapping::OccupancyGridBuilder>(
       occupancy_config_);
   if (!builder_->valid()) {
@@ -244,6 +290,12 @@ void OccupancyGridPublisher::setup(
       period, [this]() { publish(); }, callback_group);
   if (source_policy_ == SourcePolicy::kSnapshot) {
     startSnapshotWorker();
+  }
+  if (grid_artifact_enabled_) {
+    startGridArtifactWorker();
+    RCLCPP_INFO(node.get_logger(),
+                "Online occupancy Nav2 artifact enabled: yaml=%s period=%.1fs",
+                grid_artifact_yaml_path_.c_str(), grid_artifact_period_s_);
   }
 
   RCLCPP_INFO(
@@ -316,6 +368,17 @@ void OccupancyGridPublisher::setMapSnapshot(
 void OccupancyGridPublisher::resetSession() {
   // Joining here makes the session boundary explicit: an old rebuild cannot
   // publish a dense product after the new frontend/downstream state starts.
+  // Flush the final online product before version numbering restarts at one.
+  if (grid_artifact_enabled_) {
+    const auto snapshot = latest_snapshot_.load(std::memory_order_acquire);
+    std::string frame_id;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      frame_id = frame_id_;
+    }
+    enqueueGridArtifact(snapshot, frame_id, true);
+  }
+  stopGridArtifactWorker();
   stopSnapshotWorker();
   {
     std::lock_guard<std::mutex> lock(snapshot_worker_mutex_);
@@ -335,8 +398,16 @@ void OccupancyGridPublisher::resetSession() {
   }
   snapshot_request_generation_.store(0, std::memory_order_release);
   snapshot_worker_stop_requested_.store(false, std::memory_order_release);
+  grid_artifact_written_version_.store(0, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(grid_artifact_mutex_);
+    next_grid_artifact_submission_ = {};
+  }
   if (source_policy_ == SourcePolicy::kSnapshot && enabled_) {
     startSnapshotWorker();
+  }
+  if (grid_artifact_enabled_ && enabled_) {
+    startGridArtifactWorker();
   }
 }
 
@@ -506,6 +577,150 @@ void OccupancyGridPublisher::publishLatestSnapshot() {
     frame_id = frame_id_;
   }
   publisher_->publish(toRosMessage(*snapshot, frame_id, clock_));
+  enqueueGridArtifact(snapshot, frame_id, false);
+}
+
+void OccupancyGridPublisher::enqueueGridArtifact(
+    std::shared_ptr<const adagraph::mapping::OccupancyGridSnapshot> grid,
+    const std::string& frame_id, const bool force) {
+  if (!grid_artifact_enabled_ || !grid || !grid->valid() ||
+      frame_id.empty()) {
+    return;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard<std::mutex> lock(grid_artifact_mutex_);
+  if (!grid_artifact_worker_started_ || grid_artifact_worker_stop_) {
+    return;
+  }
+  if (!force && grid->version <=
+                    grid_artifact_written_version_.load(
+                        std::memory_order_acquire)) {
+    return;
+  }
+  if (!force && now < next_grid_artifact_submission_) {
+    return;
+  }
+  if (pending_grid_artifact_ && pending_grid_artifact_->grid &&
+      pending_grid_artifact_->grid->version >= grid->version) {
+    return;
+  }
+  if (pending_grid_artifact_) {
+    ++grid_artifact_superseded_;
+  }
+
+  auto pending = std::make_shared<PendingGridArtifact>();
+  pending->request_id = next_grid_artifact_request_id_++;
+  pending->grid = std::move(grid);
+  pending->frame_id = frame_id;
+  pending->occupied_value = occupancy_config_.occupied_value;
+  pending->free_value = occupancy_config_.free_value;
+  pending->unknown_value = occupancy_config_.unknown_value;
+  pending_grid_artifact_ = std::move(pending);
+  next_grid_artifact_submission_ =
+      now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(grid_artifact_period_s_));
+  ++grid_artifact_submitted_;
+  grid_artifact_cv_.notify_one();
+}
+
+void OccupancyGridPublisher::startGridArtifactWorker() {
+  std::lock_guard<std::mutex> lock(grid_artifact_mutex_);
+  if (grid_artifact_worker_started_) {
+    return;
+  }
+  grid_artifact_worker_stop_ = false;
+  grid_artifact_worker_started_ = true;
+  grid_artifact_worker_ = std::thread(
+      &OccupancyGridPublisher::gridArtifactWorkerLoop, this);
+}
+
+void OccupancyGridPublisher::stopGridArtifactWorker() {
+  {
+    std::lock_guard<std::mutex> lock(grid_artifact_mutex_);
+    if (!grid_artifact_worker_started_) {
+      return;
+    }
+    grid_artifact_worker_stop_ = true;
+  }
+  grid_artifact_cv_.notify_all();
+  if (grid_artifact_worker_.joinable()) {
+    grid_artifact_worker_.join();
+  }
+  {
+    std::lock_guard<std::mutex> lock(grid_artifact_mutex_);
+    grid_artifact_worker_started_ = false;
+    pending_grid_artifact_.reset();
+  }
+  RCLCPP_INFO(
+      logger_,
+      "Occupancy grid artifacts submitted/completed/failed/superseded="
+      "%lu/%lu/%lu/%lu, last_written_version=%lu",
+      static_cast<unsigned long>(grid_artifact_submitted_.load()),
+      static_cast<unsigned long>(grid_artifact_completed_.load()),
+      static_cast<unsigned long>(grid_artifact_failed_.load()),
+      static_cast<unsigned long>(grid_artifact_superseded_.load()),
+      static_cast<unsigned long>(grid_artifact_written_version_.load()));
+}
+
+void OccupancyGridPublisher::gridArtifactWorkerLoop() {
+  for (;;) {
+    std::shared_ptr<const PendingGridArtifact> pending;
+    {
+      std::unique_lock<std::mutex> lock(grid_artifact_mutex_);
+      grid_artifact_cv_.wait(lock, [this] {
+        return grid_artifact_worker_stop_ || pending_grid_artifact_;
+      });
+      if (!pending_grid_artifact_) {
+        if (grid_artifact_worker_stop_) {
+          return;
+        }
+        continue;
+      }
+      pending = std::move(pending_grid_artifact_);
+    }
+
+    adagraph::io::Nav2GridArtifactResult result;
+    try {
+      adagraph::io::Nav2GridArtifactRequest request;
+      request.request_id = pending->request_id;
+      request.grid = pending->grid;
+      request.yaml_path = grid_artifact_yaml_path_;
+      request.frame_id = pending->frame_id;
+      request.source = "online";
+      request.occupied_value = pending->occupied_value;
+      request.free_value = pending->free_value;
+      request.unknown_value = pending->unknown_value;
+      result = adagraph::io::WriteNav2GridArtifact(std::move(request));
+    } catch (const std::exception& error) {
+      result.request_id = pending->request_id;
+      result.grid_version = pending->grid ? pending->grid->version : 0;
+      result.message = std::string("exception while saving Nav2 artifact: ") +
+                       error.what();
+    }
+
+    if (!result.success) {
+      ++grid_artifact_failed_;
+      RCLCPP_ERROR(logger_,
+                   "Failed to save online occupancy Nav2 artifact v%lu: %s",
+                   static_cast<unsigned long>(result.grid_version),
+                   result.message.c_str());
+      continue;
+    }
+
+    auto written = grid_artifact_written_version_.load(
+        std::memory_order_acquire);
+    while (written < result.grid_version &&
+           !grid_artifact_written_version_.compare_exchange_weak(
+               written, result.grid_version, std::memory_order_acq_rel,
+               std::memory_order_acquire)) {
+    }
+    ++grid_artifact_completed_;
+    RCLCPP_INFO(logger_,
+                "Saved online occupancy Nav2 artifact v%lu: yaml=%s",
+                static_cast<unsigned long>(result.grid_version),
+                result.yaml_path.c_str());
+  }
 }
 
 void OccupancyGridPublisher::startSnapshotWorker() {

@@ -541,6 +541,7 @@ target_include_directories(adagraph_ros_publication PUBLIC
 target_link_libraries(adagraph_ros_publication PUBLIC
   adagraph_ros2_adapter
   adagraph_backend_core
+  adagraph_map_io
   adagraph_system_core
   adagraph_mapping_core
   Eigen3::Eigen

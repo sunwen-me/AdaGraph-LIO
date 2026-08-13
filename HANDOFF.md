@@ -370,7 +370,7 @@ mapping run should either:
 1. enable occupancy-grid generation while mapping so sensor origins are used
    online, then save the resulting Nav2 grid; or
 2. record/replay the mapping bag and rebuild the grid from poses plus scans; or
-3. add a mapping-time grid artifact to the map directory.
+3. enable the mapping-time grid artifact below during the next mapping run.
 
 Do not solve the black-map problem by setting all unknown cells to free. That
 would allow planning through truly unobserved space.
@@ -398,6 +398,8 @@ z range: -0.790 to 4.560 m
 ```
 
 That directory had no `nav2_map.yaml` or PGM at the time of the last test.
+Current code can now generate these files while mapping from online occupancy
+evidence; it has not yet been run on the Jetson/real robot.
 
 Older map directories with Nav2 PGM/YAML files existed at:
 
@@ -893,8 +895,12 @@ Priorities for the next session:
    is not yet reliable enough. Do not relax `initial_max_fitness` to hide this.
    Use a descriptor/keyframe place-recognition path such as Scan Context for
    candidate retrieval if strict registration alone cannot make startup robust.
-3. **Produce a proper mapping-time Nav2 grid artifact.** The latest PCD-derived static
-   grid lacks historical free-space observations.
+3. **Run the new mapping-time Nav2 grid artifact on the real robot.** Enable
+   `lio.occupancy_grid.source: online`, set
+   `lio.occupancy_grid.artifact.enable: true` and give
+   `lio.occupancy_grid.artifact.yaml_path` an absolute path in the new map
+   directory. The writer is format-tested against Nav2 `map_server`, but
+   online update/lock/RSS long-run behavior still needs a representative run.
 4. **Perform an actual closed-loop Nav2 drive in an observed safe area.** The last test proved planning,
    TF, costmaps, and command wiring, but did not send a NavigateToPose goal.
 5. **Fix the one-command real launch.** Remove the duplicate `/map` source and

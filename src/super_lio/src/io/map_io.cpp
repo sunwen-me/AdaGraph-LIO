@@ -5,9 +5,11 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -485,7 +487,223 @@ MapSaveResult SaveFragmentSet(
   return written;
 }
 
+bool ContainsLineBreak(std::string_view value) {
+  return value.find_first_of("\r\n") != std::string_view::npos;
+}
+
+std::string QuoteYaml(std::string_view value) {
+  std::string quoted;
+  quoted.reserve(value.size() + 2);
+  quoted.push_back('"');
+  for (const char character : value) {
+    if (character == '\\' || character == '"') {
+      quoted.push_back('\\');
+    }
+    quoted.push_back(character);
+  }
+  quoted.push_back('"');
+  return quoted;
+}
+
+std::filesystem::path TemporaryPath(const std::filesystem::path& target,
+                                    const std::uint64_t request_id,
+                                    const std::uint64_t version) {
+  return target.string() + ".tmp." + std::to_string(request_id) + "." +
+         std::to_string(version);
+}
+
+bool InstallTemporaryFile(const std::filesystem::path& temporary,
+                          const std::filesystem::path& target,
+                          std::string& error_message) {
+  std::error_code error;
+  std::filesystem::rename(temporary, target, error);
+  if (!error) {
+    return true;
+  }
+  const std::string rename_error = error.message();
+  std::filesystem::remove(temporary, error);
+  error_message = "failed to atomically install " + target.string() + ": " +
+                  rename_error;
+  return false;
+}
+
+bool WriteTextAtomically(const std::filesystem::path& target,
+                         const std::uint64_t request_id,
+                         const std::uint64_t version,
+                         const std::string& contents,
+                         std::string& error_message) {
+  const auto temporary = TemporaryPath(target, request_id, version);
+  std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+  if (!output) {
+    error_message = "failed to open temporary output " + temporary.string();
+    return false;
+  }
+  output << contents;
+  output.close();
+  if (!output) {
+    std::error_code error;
+    std::filesystem::remove(temporary, error);
+    error_message = "failed to write temporary output " + temporary.string();
+    return false;
+  }
+  return InstallTemporaryFile(temporary, target, error_message);
+}
+
+std::uint8_t ToNav2PgmValue(
+    const std::int8_t value,
+    const adagraph::io::Nav2GridArtifactRequest& request) noexcept {
+  constexpr std::uint8_t kOccupied = 0;
+  constexpr std::uint8_t kFree = 254;
+  constexpr std::uint8_t kUnknown = 205;
+  if (value == request.unknown_value) {
+    return kUnknown;
+  }
+  if (request.occupied_value >= request.free_value) {
+    if (value >= request.occupied_value) {
+      return kOccupied;
+    }
+    if (value <= request.free_value) {
+      return kFree;
+    }
+  } else {
+    if (value <= request.occupied_value) {
+      return kOccupied;
+    }
+    if (value >= request.free_value) {
+      return kFree;
+    }
+  }
+  return kUnknown;
+}
+
+bool WritePgmAtomically(const std::filesystem::path& target,
+                        const Nav2GridArtifactRequest& request,
+                        std::string& error_message) {
+  const auto& grid = *request.grid;
+  const auto temporary = TemporaryPath(target, request.request_id,
+                                       grid.version);
+  std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+  if (!output) {
+    error_message = "failed to open temporary image " + temporary.string();
+    return false;
+  }
+  output << "P5\n# AdaGraph-LIO online occupancy artifact\n" << grid.width
+         << " " << grid.height << "\n255\n";
+  if (!output) {
+    output.close();
+    std::error_code error;
+    std::filesystem::remove(temporary, error);
+    error_message = "failed to write PGM header";
+    return false;
+  }
+
+  // OccupancyGridSnapshot is lower-left origin, whereas PGM row zero is the
+  // top image row. Nav2 map_server applies this inverse mapping on load.
+  for (std::uint32_t row = grid.height; row > 0; --row) {
+    const auto source_row = static_cast<std::size_t>(row - 1);
+    const auto offset = source_row * static_cast<std::size_t>(grid.width);
+    for (std::uint32_t column = 0; column < grid.width; ++column) {
+      const auto pixel = ToNav2PgmValue(
+          grid.data[offset + static_cast<std::size_t>(column)], request);
+      output.put(static_cast<char>(pixel));
+    }
+  }
+  output.close();
+  if (!output) {
+    std::error_code error;
+    std::filesystem::remove(temporary, error);
+    error_message = "failed while writing PGM payload";
+    return false;
+  }
+  return InstallTemporaryFile(temporary, target, error_message);
+}
+
 }  // namespace
+
+bool Nav2GridArtifactRequest::valid() const noexcept {
+  if (!grid || !grid->valid() || yaml_path.empty() ||
+      yaml_path.filename().empty() || frame_id.empty() || source.empty() ||
+      ContainsLineBreak(yaml_path.string()) || ContainsLineBreak(frame_id) ||
+      ContainsLineBreak(source) ||
+      occupied_value < 0 || occupied_value > 100 || free_value < 0 ||
+      free_value > 100 || unknown_value < -1 || unknown_value > 100) {
+    return false;
+  }
+  const auto extension = yaml_path.extension().string();
+  return extension == ".yaml" || extension == ".yml";
+}
+
+Nav2GridArtifactResult WriteNav2GridArtifact(
+    Nav2GridArtifactRequest request) {
+  Nav2GridArtifactResult result;
+  result.request_id = request.request_id;
+  if (!request.valid()) {
+    result.message = "invalid Nav2 grid artifact request";
+    return result;
+  }
+
+  const auto& grid = *request.grid;
+  result.grid_version = grid.version;
+  result.yaml_path = std::move(request.yaml_path);
+  const auto parent = result.yaml_path.parent_path();
+  const auto stem = result.yaml_path.stem().string();
+  result.image_path = parent / (stem + ".pgm");
+  result.metadata_path = parent / (stem + ".metadata.yaml");
+
+  std::error_code error;
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, error);
+    if (error) {
+      result.message = "failed to create artifact directory: " +
+                       error.message();
+      return result;
+    }
+  }
+
+  if (!WritePgmAtomically(result.image_path, request, result.message)) {
+    return result;
+  }
+
+  const double origin_x = static_cast<double>(grid.origin_x) * grid.resolution;
+  const double origin_y = static_cast<double>(grid.origin_y) * grid.resolution;
+  std::ostringstream metadata;
+  metadata << std::setprecision(17)
+           << "schema_version: 1\n"
+           << "map_yaml: " << QuoteYaml(result.yaml_path.filename().string())
+           << "\nimage: " << QuoteYaml(result.image_path.filename().string())
+           << "\nframe_id: " << QuoteYaml(request.frame_id)
+           << "\nsource: " << QuoteYaml(request.source)
+           << "\ngrid_version: " << grid.version
+           << "\ntimestamp_nanoseconds: " << grid.timestamp_nanoseconds
+           << "\nresolution: " << grid.resolution
+           << "\norigin: [" << origin_x << ", " << origin_y << ", 0.0]"
+           << "\nwidth: " << grid.width << "\nheight: " << grid.height
+           << "\noccupied_value: " << request.occupied_value
+           << "\nfree_value: " << request.free_value
+           << "\nunknown_value: " << request.unknown_value << "\n";
+  if (!WriteTextAtomically(result.metadata_path, request.request_id,
+                           grid.version, metadata.str(), result.message)) {
+    return result;
+  }
+
+  std::ostringstream yaml;
+  yaml << std::setprecision(17)
+       << "image: " << QuoteYaml(result.image_path.filename().string())
+       << "\nmode: trinary\nresolution: " << grid.resolution
+       << "\norigin: [" << origin_x << ", " << origin_y << ", 0.0]"
+       // Nav2's trinary PGM convention uses 0/205/254 for occupied/unknown/
+       // free. Its 0.196 free threshold keeps 205 unknown rather than
+       // interpreting it as traversable free space.
+       << "\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n";
+  if (!WriteTextAtomically(result.yaml_path, request.request_id, grid.version,
+                           yaml.str(), result.message)) {
+    return result;
+  }
+
+  result.success = true;
+  result.message = "saved Nav2 PGM/YAML grid artifact";
+  return result;
+}
 
 MapSaveScheduler::MapSaveScheduler(std::size_t queue_capacity,
                                    CompletionCallback completion)

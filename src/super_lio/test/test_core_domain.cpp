@@ -4,9 +4,11 @@
 #include <cstdint>
 #include <condition_variable>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -591,6 +593,108 @@ TEST(MapSaveScheduler, MergesQueuedPcdFragmentsAfterFragmentWrites) {
   EXPECT_EQ(stats.processed, 3U);
   EXPECT_EQ(stats.failed, 0U);
   fs::remove_all(directory, error);
+}
+
+TEST(Nav2GridArtifact, WritesMapServerCompatiblePgmAndMetadataAtomically) {
+  namespace fs = std::filesystem;
+  const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+  const fs::path directory =
+      fs::temp_directory_path() / ("adagraph_nav2_grid_" +
+                                   std::to_string(suffix));
+  const fs::path yaml_path = directory / "online_map.yaml";
+  std::error_code error;
+  fs::remove_all(directory, error);
+
+  auto grid = std::make_shared<adagraph::mapping::OccupancyGridSnapshot>();
+  grid->version = 7;
+  grid->timestamp_nanoseconds = 123456789;
+  grid->resolution = 0.5;
+  grid->origin_x = -2;
+  grid->origin_y = 3;
+  grid->width = 2;
+  grid->height = 2;
+  // Rows are lower-to-upper in OccupancyGridSnapshot.
+  grid->data = {-1, 0, 100, 42};
+  ASSERT_TRUE(grid->valid());
+
+  adagraph::io::Nav2GridArtifactRequest request;
+  request.request_id = 11;
+  request.grid = grid;
+  request.yaml_path = yaml_path;
+  request.frame_id = "map";
+  const auto written = adagraph::io::WriteNav2GridArtifact(request);
+
+  ASSERT_TRUE(written.success) << written.message;
+  EXPECT_EQ(written.request_id, 11U);
+  EXPECT_EQ(written.grid_version, 7U);
+  EXPECT_EQ(written.image_path, directory / "online_map.pgm");
+  EXPECT_EQ(written.metadata_path, directory / "online_map.metadata.yaml");
+  EXPECT_TRUE(fs::exists(written.yaml_path));
+  EXPECT_TRUE(fs::exists(written.image_path));
+  EXPECT_TRUE(fs::exists(written.metadata_path));
+
+  std::ifstream pgm(written.image_path, std::ios::binary);
+  ASSERT_TRUE(pgm.good());
+  std::string line;
+  ASSERT_TRUE(std::getline(pgm, line));
+  EXPECT_EQ(line, "P5");
+  ASSERT_TRUE(std::getline(pgm, line));
+  EXPECT_EQ(line, "# AdaGraph-LIO online occupancy artifact");
+  ASSERT_TRUE(std::getline(pgm, line));
+  EXPECT_EQ(line, "2 2");
+  ASSERT_TRUE(std::getline(pgm, line));
+  EXPECT_EQ(line, "255");
+  const std::vector<unsigned char> pixels{
+      std::istreambuf_iterator<char>(pgm), std::istreambuf_iterator<char>()};
+  // PGM is top-to-bottom, so the upper snapshot row appears first.
+  EXPECT_EQ(pixels, (std::vector<unsigned char>{0, 205, 205, 254}));
+
+  std::ifstream yaml(written.yaml_path);
+  ASSERT_TRUE(yaml.good());
+  const std::string yaml_text{std::istreambuf_iterator<char>(yaml), {}};
+  EXPECT_NE(yaml_text.find("image: \"online_map.pgm\""), std::string::npos);
+  EXPECT_NE(yaml_text.find("resolution: 0.5"), std::string::npos);
+  EXPECT_NE(yaml_text.find("origin: [-1, 1.5, 0.0]"), std::string::npos);
+  EXPECT_NE(yaml_text.find("mode: trinary"), std::string::npos);
+  EXPECT_NE(yaml_text.find("occupied_thresh: 0.65"), std::string::npos);
+  EXPECT_NE(yaml_text.find("free_thresh: 0.196"), std::string::npos);
+
+  std::ifstream metadata(written.metadata_path);
+  ASSERT_TRUE(metadata.good());
+  const std::string metadata_text{
+      std::istreambuf_iterator<char>(metadata), {}};
+  EXPECT_NE(metadata_text.find("frame_id: \"map\""), std::string::npos);
+  EXPECT_NE(metadata_text.find("source: \"online\""), std::string::npos);
+  EXPECT_NE(metadata_text.find("grid_version: 7"), std::string::npos);
+  EXPECT_NE(metadata_text.find("timestamp_nanoseconds: 123456789"),
+            std::string::npos);
+
+  grid->version = 8;
+  grid->data = {-1, 0, 100, 42};
+  request.request_id = 12;
+  const auto overwritten = adagraph::io::WriteNav2GridArtifact(request);
+  ASSERT_TRUE(overwritten.success) << overwritten.message;
+  EXPECT_EQ(overwritten.grid_version, 8U);
+  std::ifstream updated_metadata(overwritten.metadata_path);
+  const std::string updated_metadata_text{
+      std::istreambuf_iterator<char>(updated_metadata), {}};
+  EXPECT_NE(updated_metadata_text.find("grid_version: 8"), std::string::npos);
+  std::size_t files = 0;
+  for (const auto& entry : fs::directory_iterator(directory)) {
+    ++files;
+    EXPECT_TRUE(entry.path().extension() == ".yaml" ||
+                entry.path().extension() == ".pgm");
+  }
+  EXPECT_EQ(files, 3U);
+
+  request.yaml_path = directory / "invalid.txt";
+  EXPECT_FALSE(request.valid());
+  request.yaml_path = yaml_path;
+  request.frame_id = "map\ninvalid";
+  EXPECT_FALSE(request.valid());
+  if (std::getenv("ADAGRAPH_KEEP_TEST_ARTIFACTS") == nullptr) {
+    fs::remove_all(directory, error);
+  }
 }
 
 TEST(KeyFrame, EnforcesOdomBaseAndCloudBaseContract) {

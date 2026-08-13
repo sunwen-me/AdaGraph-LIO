@@ -175,6 +175,11 @@
     lio.occupancy_grid.publish_period: 1.0
     lio.occupancy_grid.source: "snapshot"
     lio.occupancy_grid.update_policy: "lazy"
+    # Mapping-time Nav2 map artifact. Enable only while source=online; the
+    # path must be absolute and should be inside the mapping run directory.
+    lio.occupancy_grid.artifact.enable: false
+    lio.occupancy_grid.artifact.yaml_path: ""
+    lio.occupancy_grid.artifact.write_period_s: 5.0
     lio.occupancy_grid.map_padding: 1.0
     lio.occupancy_grid.inflation_radius: 0.0
     lio.occupancy_grid.use_unknown: true

@@ -2,8 +2,10 @@
 #define LI2SUP_OCCUPANCY_GRID_PUBLISHER_H_
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -14,6 +16,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include "adagraph/mapping/occupancy_grid.h"
+#include "adagraph/io/map_io.h"
 #include "basic/alias.h"
 #include "ros/ground_segmentation_filter.h"
 
@@ -74,6 +77,20 @@ private:
   void startSnapshotWorker();
   void stopSnapshotWorker();
   void snapshotWorkerLoop();
+  struct PendingGridArtifact {
+    std::uint64_t request_id = 0;
+    std::shared_ptr<const adagraph::mapping::OccupancyGridSnapshot> grid;
+    std::string frame_id;
+    int occupied_value = 100;
+    int free_value = 0;
+    int unknown_value = -1;
+  };
+  void enqueueGridArtifact(
+      std::shared_ptr<const adagraph::mapping::OccupancyGridSnapshot> grid,
+      const std::string& frame_id, bool force);
+  void startGridArtifactWorker();
+  void stopGridArtifactWorker();
+  void gridArtifactWorkerLoop();
 
 private:
   bool enabled_ = false;
@@ -122,6 +139,25 @@ private:
   std::atomic<std::uint64_t> snapshot_rebuild_budget_exceeded_{0};
   std::atomic<std::uint64_t> snapshot_rebuild_failed_{0};
   std::atomic<std::size_t> snapshot_rebuild_peak_scratch_bytes_{0};
+
+  // Only online occupancy retains per-scan origins and ray-carved free-space
+  // history, so only that product is eligible for a durable Nav2 map artifact.
+  bool grid_artifact_enabled_ = false;
+  std::filesystem::path grid_artifact_yaml_path_;
+  double grid_artifact_period_s_ = 5.0;
+  std::mutex grid_artifact_mutex_;
+  std::condition_variable grid_artifact_cv_;
+  std::shared_ptr<const PendingGridArtifact> pending_grid_artifact_;
+  std::thread grid_artifact_worker_;
+  bool grid_artifact_worker_stop_ = false;
+  bool grid_artifact_worker_started_ = false;
+  std::chrono::steady_clock::time_point next_grid_artifact_submission_{};
+  std::uint64_t next_grid_artifact_request_id_ = 1;
+  std::atomic<std::uint64_t> grid_artifact_written_version_{0};
+  std::atomic<std::uint64_t> grid_artifact_submitted_{0};
+  std::atomic<std::uint64_t> grid_artifact_completed_{0};
+  std::atomic<std::uint64_t> grid_artifact_failed_{0};
+  std::atomic<std::uint64_t> grid_artifact_superseded_{0};
 
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr publisher_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ground_debug_pub_;

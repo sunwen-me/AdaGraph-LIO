@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "adagraph/mapping/map_snapshot.h"
+#include "adagraph/mapping/occupancy_grid.h"
 #include "adagraph/mapping/snapshot_products.h"
 
 namespace adagraph::io {
@@ -96,6 +97,39 @@ struct MapSaveSchedulerStats {
   std::uint64_t capacity_waits = 0;
   std::size_t maximum_queue_depth = 0;
 };
+
+// A durable Nav2-compatible product generated while mapping from the online
+// occupancy evidence path.  The standard YAML and PGM can be passed directly
+// to map_server; a neighboring metadata YAML preserves the dynamic frame and
+// provenance that Nav2's map YAML format does not represent.
+struct Nav2GridArtifactRequest {
+  std::uint64_t request_id = 0;
+  std::shared_ptr<const adagraph::mapping::OccupancyGridSnapshot> grid;
+  std::filesystem::path yaml_path;
+  std::string frame_id;
+  std::string source = "online";
+  int occupied_value = 100;
+  int free_value = 0;
+  int unknown_value = -1;
+
+  [[nodiscard]] bool valid() const noexcept;
+};
+
+struct Nav2GridArtifactResult {
+  std::uint64_t request_id = 0;
+  std::uint64_t grid_version = 0;
+  bool success = false;
+  std::filesystem::path yaml_path;
+  std::filesystem::path image_path;
+  std::filesystem::path metadata_path;
+  std::string message;
+};
+
+// Writes PGM first, metadata second and the map-server YAML last, installing
+// each through a same-directory atomic rename.  This ordering ensures that a
+// reader which observes a new YAML can also resolve its referenced image.
+[[nodiscard]] Nav2GridArtifactResult WriteNav2GridArtifact(
+    Nav2GridArtifactRequest request);
 
 // Reliable bounded map-IO worker. Accepted save commands are never silently
 // discarded. A caller may wait for bounded capacity, but no filesystem or

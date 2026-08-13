@@ -114,6 +114,23 @@ FastVGICP 不会写回 Point-LIO ESKF 或其 odom-frame 体素地图。手动全
 
 ## 保存地图
 
+在线建图时可以从保留了每帧传感器原点和 ray-carved free-space 的 online
+occupancy 生成 Nav2 可直接加载的 PGM/YAML。默认仍使用经过验证的
+`snapshot` occupancy，不会产生 artifact。仅在一次明确的建图任务中配置：
+
+```yaml
+lio.occupancy_grid.source: "online"
+lio.occupancy_grid.artifact.enable: true
+lio.occupancy_grid.artifact.yaml_path: "/absolute/mapping_run/nav2_map.yaml"
+lio.occupancy_grid.artifact.write_period_s: 5.0
+```
+
+输出包括 `nav2_map.yaml`、同名 `.pgm` 和 `.metadata.yaml`。写入在后台执行，
+最后的 YAML 通过同目录原子替换安装；停止节点时会刷新当前 grid。artifact
+只适用于 online source，不能从 Snapshot 或 PCD 倒推历史 free-space。标准
+Nav2 `map_server` 已实际加载测试产物，并保持 unknown/free/occupied 语义；真实
+部署前仍需记录 online 路径的更新尾延迟、锁持有时间和 RSS。
+
 ```bash
 ros2 launch super_lio PointLIO_mid360.py \
   save_map:=true \

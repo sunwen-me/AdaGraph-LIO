@@ -116,6 +116,9 @@
     lio.occupancy_grid.publish_period: 1.0
     lio.occupancy_grid.source: "snapshot"
     lio.occupancy_grid.update_policy: "lazy"
+    lio.occupancy_grid.artifact.enable: false
+    lio.occupancy_grid.artifact.yaml_path: ""
+    lio.occupancy_grid.artifact.write_period_s: 5.0
     lio.occupancy_grid.rebuild.max_scratch_memory_mb: 64
     lio.occupancy_grid.rebuild.max_points: 5000000
     lio.occupancy_grid.rebuild.cancellation_check_interval: 4096
