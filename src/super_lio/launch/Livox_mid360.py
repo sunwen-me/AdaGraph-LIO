@@ -101,12 +101,19 @@ def generate_launch_description():
 
     declare_localization_voxel_size_arg = DeclareLaunchArgument(
         'localization_voxel_size',
-        default_value='0.5',
-        description='Voxel size used by KISS and prior-map registration'
+        default_value='0.10',
+        description='Voxel size used by prior-map VGICP registration'
     )
     localization_voxel_size = LaunchConfiguration(
         'localization_voxel_size'
     )
+
+    declare_kiss_voxel_size_arg = DeclareLaunchArgument(
+        'kiss_voxel_size',
+        default_value='0.20',
+        description='Independent voxel and feature scale used by KISS-Matcher'
+    )
+    kiss_voxel_size = LaunchConfiguration('kiss_voxel_size')
 
     declare_kiss_use_quatro_arg = DeclareLaunchArgument(
         'kiss_use_quatro',
@@ -114,6 +121,22 @@ def generate_launch_description():
         description='Use gravity-aligned Quatro rotation estimation in KISS'
     )
     kiss_use_quatro = LaunchConfiguration('kiss_use_quatro')
+
+    declare_kiss_use_ratio_test_arg = DeclareLaunchArgument(
+        'kiss_use_ratio_test',
+        default_value='true',
+        description='Preferred descriptor ratio-test mode for KISS-Matcher'
+    )
+    kiss_use_ratio_test = LaunchConfiguration('kiss_use_ratio_test')
+
+    declare_kiss_adaptive_ratio_test_arg = DeclareLaunchArgument(
+        'kiss_adaptive_ratio_test',
+        default_value='true',
+        description='Evaluate ratio-on and ratio-off KISS candidates with VGICP'
+    )
+    kiss_adaptive_ratio_test = LaunchConfiguration(
+        'kiss_adaptive_ratio_test'
+    )
 
     declare_save_map_arg = DeclareLaunchArgument(
         'save_map',
@@ -161,10 +184,16 @@ def generate_launch_description():
                     use_prior_map, value_type=bool
                 ),
                 'lio.kiss_matcher.voxel_size': ParameterValue(
-                    localization_voxel_size, value_type=float
+                    kiss_voxel_size, value_type=float
                 ),
                 'lio.kiss_matcher.use_quatro': ParameterValue(
                     kiss_use_quatro, value_type=bool
+                ),
+                'lio.kiss_matcher.use_ratio_test': ParameterValue(
+                    kiss_use_ratio_test, value_type=bool
+                ),
+                'lio.kiss_matcher.adaptive_ratio_test': ParameterValue(
+                    kiss_adaptive_ratio_test, value_type=bool
                 ),
                 'lio.map.save_map': ParameterValue(
                     save_map, value_type=bool
@@ -233,7 +262,10 @@ def generate_launch_description():
     ld.add_action(declare_use_prior_map_arg)
     ld.add_action(declare_prior_map_file_arg)
     ld.add_action(declare_localization_voxel_size_arg)
+    ld.add_action(declare_kiss_voxel_size_arg)
     ld.add_action(declare_kiss_use_quatro_arg)
+    ld.add_action(declare_kiss_use_ratio_test_arg)
+    ld.add_action(declare_kiss_adaptive_ratio_test_arg)
     ld.add_action(declare_save_map_arg)
     ld.add_action(declare_save_map_dir_arg)
     ld.add_action(declare_map_name_arg)

@@ -50,6 +50,9 @@ kiss_matcher::KeypointPair KISSMatcher::match(const std::vector<Eigen::Vector3f>
   clear();
   auto processInput = [&](const std::vector<Eigen::Vector3f> &input_cloud) {
     if (config_.use_voxel_sampling_) {
+      if (config_.deterministic_voxel_sampling_) {
+        return VoxelgridSamplingDeterministic(input_cloud, config_.voxel_size_);
+      }
       return VoxelgridSampling(input_cloud, config_.voxel_size_);
     }
     return input_cloud;

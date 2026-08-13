@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -65,7 +66,7 @@ BackendResult process(AdaGraphBackend& backend, const FeatureFrame& frame,
 
 TEST(AdaGraphBackendCovariance, EmptyTermsUseRuleBasedCovarianceGoodFrame) {
   AdaGraphBackend backend;
-  backend.init();
+  backend.initWithConfig();
   ASSERT_TRUE(backend.initialized());
 
   const BackendResult res = process(backend, goodFrame(), {});
@@ -77,9 +78,37 @@ TEST(AdaGraphBackendCovariance, EmptyTermsUseRuleBasedCovarianceGoodFrame) {
   }
 }
 
+TEST(AdaGraphBackendConfig, ExplicitInstancesDoNotShareGlobalTuning) {
+  adagraph::backend::BackendConfig precise_config;
+  precise_config.odometry_translation_sigma_m = 0.02;
+  precise_config.odometry_rotation_sigma_rad = 0.01;
+  AdaGraphBackend precise_backend(precise_config);
+  precise_backend.initWithConfig();
+
+  adagraph::backend::BackendConfig loose_config;
+  loose_config.odometry_translation_sigma_m = 0.2;
+  loose_config.odometry_rotation_sigma_rad = 0.1;
+  AdaGraphBackend loose_backend(loose_config);
+  loose_backend.initWithConfig();
+
+  const BackendResult precise = process(precise_backend, goodFrame(), {});
+  const BackendResult loose = process(loose_backend, goodFrame(), {});
+  EXPECT_NEAR(precise.sigmas(0), 0.01, 1e-9);
+  EXPECT_NEAR(precise.sigmas(3), 0.02, 1e-9);
+  EXPECT_NEAR(loose.sigmas(0), 0.1, 1e-9);
+  EXPECT_NEAR(loose.sigmas(3), 0.2, 1e-9);
+}
+
+TEST(AdaGraphBackendConfig, RejectsInvalidExplicitConfig) {
+  adagraph::backend::BackendConfig config;
+  config.keyframe_max_frames = 0;
+  AdaGraphBackend backend(config);
+  EXPECT_THROW(backend.initWithConfig(), std::invalid_argument);
+}
+
 TEST(AdaGraphBackendCovariance, RuleBasedTierModerateInlierRatio) {
   AdaGraphBackend backend;
-  backend.init();
+  backend.initWithConfig();
 
   FeatureFrame f = goodFrame();
   f.inlier_ratio = 0.6;  // 0.5..0.7 tier -> x1.3
@@ -94,7 +123,7 @@ TEST(AdaGraphBackendCovariance, RuleBasedTierModerateInlierRatio) {
 
 TEST(AdaGraphBackendCovariance, RuleBasedScalesClampAtTen) {
   AdaGraphBackend backend;
-  backend.init();
+  backend.initWithConfig();
 
   FeatureFrame f;
   f.inlier_ratio = 0.1;             // x3 (both)
@@ -115,7 +144,7 @@ TEST(AdaGraphBackendCovariance, RuleBasedScalesClampAtTen) {
 
 TEST(AdaGraphBackendCovariance, StrongHessianUsesInformationInverse) {
   AdaGraphBackend backend;
-  backend.init();
+  backend.initWithConfig();
 
   // Two terms sum to H = 4e5 * I (information is additive), all eigenvalues
   // far above the 1e3 gate -> cov = H^-1, sigmas = 1/sqrt(4e5).
@@ -132,7 +161,7 @@ TEST(AdaGraphBackendCovariance, StrongHessianUsesInformationInverse) {
 
 TEST(AdaGraphBackendCovariance, DegenerateAxisGetsRuleVarianceInjected) {
   AdaGraphBackend backend;
-  backend.init();
+  backend.initWithConfig();
 
   // rot-z (index 2) nearly unobserved (eigenvalue 10 < gate 1e3), all other
   // directions strong (1e6). Expect sigma(2) = rule sigma_r, others 1e-3.
@@ -153,7 +182,7 @@ TEST(AdaGraphBackendCovariance, DegenerateAxisGetsRuleVarianceInjected) {
 
 TEST(AdaGraphBackendCovariance, DegenerateTranslationAxisUsesRuleSigmaT) {
   AdaGraphBackend backend;
-  backend.init();
+  backend.initWithConfig();
 
   // trans-x (index 3) degenerate -> rule sigma_t there.
   M6 H = M6::Identity() * 1e6f;
@@ -171,7 +200,7 @@ TEST(AdaGraphBackendCovariance, DegenerateTranslationAxisUsesRuleSigmaT) {
 
 TEST(AdaGraphBackendCovariance, DegenerateOffAxisDirectionBlends) {
   AdaGraphBackend backend;
-  backend.init();
+  backend.initWithConfig();
 
   // Degenerate direction v = (1,1,0,0,0,0)/sqrt(2) in the rotation block:
   // H = 1e6 * (I - v v^T) + 10 * v v^T. The blended covariance is
@@ -198,7 +227,7 @@ TEST(AdaGraphBackendCovariance, DegenerateOffAxisDirectionBlends) {
 
 TEST(AdaGraphBackendCovariance, AllWeakHessianFallsBackToRulePath) {
   AdaGraphBackend backend;
-  backend.init();
+  backend.initWithConfig();
 
   // max eigenvalue 100 < hessian_eig_min (1e3) -> whole Hessian rejected,
   // pure rule-based covariance.
@@ -216,7 +245,7 @@ TEST(AdaGraphBackendCovariance, AllWeakHessianFallsBackToRulePath) {
 
 TEST(AdaGraphBackendChain, PureOdometryChainReproducesInputPoses) {
   AdaGraphBackend backend;
-  backend.init();
+  backend.initWithConfig();
 
   const SE3 p0;  // identity
   const SE3 p1(SO3::Exp(V3(0.0f, 0.0f, 0.1f)).R(), V3(1.0f, 0.0f, 0.0f));

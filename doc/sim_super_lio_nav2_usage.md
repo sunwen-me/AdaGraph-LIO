@@ -483,6 +483,14 @@ ros2 daemon start
 | `lio.output.path_max_poses` | int / 5000 | `/lio/path` 最大位姿数，FIFO 淘汰 |
 | `lio.output.global_map_pub_period` | double / 10.0 | 全局地图重发检查周期（秒），仅 dirty / 新订阅时重发 |
 | `lio.output.grid_update_step` | int / 1 | 占据栅格更新间隔（帧），1 = 每帧；与 `pub_step` 可视化节流解耦 |
+| `lio.output.odom_twist_filter.enable` | bool / false | 仅平滑 `/lio/odom.twist`；不修改 pose、TF 或点云坐标 |
+| `lio.output.odom_twist_filter.zero_lateral_velocity` | bool / false | 地面差速车将输出的横向速度置零 |
+| `lio.output.odom_twist_filter.linear_time_constant` | double / 0.08 | 线速度一阶低通时间常数（秒） |
+| `lio.output.odom_twist_filter.angular_time_constant` | double / 0.06 | 角速度一阶低通时间常数（秒） |
+| `lio.output.odom_twist_filter.max_linear_speed` | double / 2.0 | 线速度异常上限（米/秒） |
+| `lio.output.odom_twist_filter.max_angular_speed` | double / 4.0 | 角速度异常上限（弧度/秒） |
+| `lio.output.odom_twist_filter.max_linear_acceleration` | double / 4.0 | 线速度变化率上限（米/秒²） |
+| `lio.output.odom_twist_filter.max_angular_acceleration` | double / 8.0 | 角速度变化率上限（弧度/秒²） |
 
 占据栅格：
 

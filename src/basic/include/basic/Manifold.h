@@ -10,7 +10,7 @@
 #include <Eigen/Geometry>
 
 
-#include "alias.h"
+#include "core_alias.h"
 
 
 namespace BASIC {

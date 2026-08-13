@@ -4,7 +4,6 @@
 #include "basic/alias.h"
 #include "basic/Manifold.h"
 #include "common/ds.h"
-#include "params.h"
 
 
 namespace LI2Sup{
@@ -29,6 +28,7 @@ public:
     double acce_var_ = 1e-2;
     double bias_gyro_var_ = 1e-6;
     double bias_acce_var_ = 1e-4;
+    double gravity_norm_ = 9.8;
   };
 
 
@@ -83,6 +83,14 @@ public:
 
   void SetCov(const COV& cov){ P_ = cov; }
 
+  // Compatibility output only. The standard frontend uses typed pose values
+  // and never asks ESKF to produce a robot-frame side channel.
+  void SetLegacyRobotExtrinsic(const BASIC::M3& robot_rotation,
+                               const BASIC::V3& robot_translation) noexcept {
+    legacy_robot_rotation_ = robot_rotation;
+    legacy_robot_translation_ = robot_translation;
+  }
+
   BASIC::V3 GetGravity() const { return g_; }
 
   bool init_ = false;
@@ -106,7 +114,7 @@ private:
   BASIC::V3 v_ = BASIC::V3::Zero();
   BASIC::V3 bg_ = BASIC::V3::Zero();
   BASIC::V3 ba_ = BASIC::V3::Zero();
-  BASIC::V3 g_{0, 0, - (BASIC::scalar)g_gravity_norm};
+  BASIC::V3 g_{0, 0, -9.8};
   BASIC::V3 global_acc_  = BASIC::V3::Zero();
   BASIC::V3 body_omega_  = BASIC::V3::Zero();
 
@@ -123,6 +131,8 @@ private:
   BASIC::SO3 fw_R_;
   BASIC::V3 fw_p_ = BASIC::V3::Zero();
   BASIC::V3 fw_v_ = BASIC::V3::Zero();
+  BASIC::M3 legacy_robot_rotation_ = BASIC::M3::Identity();
+  BASIC::V3 legacy_robot_translation_ = BASIC::V3::Zero();
 };
 
 

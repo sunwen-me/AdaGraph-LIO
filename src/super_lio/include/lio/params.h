@@ -95,6 +95,9 @@ namespace LI2Sup{
   extern float g_kiss_matcher_voxel_size;
   extern bool g_kiss_matcher_use_quatro;
   extern bool g_kiss_matcher_use_voxel_sampling;
+  extern bool g_kiss_matcher_use_ratio_test;
+  extern bool g_kiss_matcher_adaptive_ratio_test;
+  extern bool g_kiss_matcher_deterministic_voxel_sampling;
   extern int g_kiss_matcher_min_final_inliers;
   extern int g_kiss_matcher_max_source_points;
   extern int g_kiss_matcher_max_target_points;
@@ -113,6 +116,7 @@ namespace LI2Sup{
   extern int g_prior_map_loc_max_iterations;
   extern int g_prior_map_loc_num_threads;
   extern double g_prior_map_loc_max_fitness;
+  extern double g_prior_map_loc_initial_max_fitness;
   extern double g_prior_map_loc_max_translation;
   extern double g_prior_map_loc_max_rotation_deg;
   extern double g_prior_map_loc_lost_fitness;

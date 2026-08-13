@@ -2,6 +2,7 @@
 #define ADAGRAPH_BACKEND_H_
 
 #include <deque>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -17,6 +18,8 @@
 
 #include "basic/Manifold.h"
 #include "basic/alias.h"
+#include "adagraph/backend/backend_config.h"
+#include "adagraph/backend/odometry_covariance_estimator.h"
 #include "lio/adagraph_types.h"
 
 namespace LI2Sup {
@@ -24,14 +27,19 @@ namespace LI2Sup {
 class AdaGraphBackend {
 public:
   AdaGraphBackend() = default;
+  explicit AdaGraphBackend(adagraph::backend::BackendConfig config)
+      : config_(std::move(config)), has_explicit_config_(true) {}
   ~AdaGraphBackend() = default;
 
+  // Compatibility entry point.  Its legacy global-parameter adapter is
+  // implemented in adagraph_legacy_compat; core users should call
+  // initWithConfig() so the algorithm target remains instance-configured.
   void init();
+  void initWithConfig();
   bool initialized() const { return initialized_; }
-
-  const BASIC::SE3& lastKeyframePose() const { return last_keyframe_pose_; }
-  bool isKeyframe(const BASIC::SE3& current_pose) const;
-  void noteNonKeyframe();
+  [[nodiscard]] const adagraph::backend::BackendConfig& config() const noexcept {
+    return config_;
+  }
 
   // map_observations: accepted prior-map registrations to attach as unary
   // factors (used only when lio.backend.use_localization_factor is set).
@@ -46,43 +54,15 @@ public:
       const BASIC::SE3* map_to_odom = nullptr);
 
 private:
-  struct ScaleFactors {
-    double s_t = 1.0;
-    double s_r = 1.0;
-  };
-
-  struct SE3Covariance {
-    Eigen::Matrix<double, 6, 6> cov = Eigen::Matrix<double, 6, 6>::Identity();
-
-    Eigen::Matrix<double, 6, 1> getSigmas() const;
-    gtsam::noiseModel::Gaussian::shared_ptr toGTSAMNoise() const;
-  };
-
-  ScaleFactors computeRuleBasedScales(const FeatureFrame& frame) const;
-  SE3Covariance predictSE3Covariance(
-      const FeatureFrame& frame,
-      const std::vector<std::pair<BASIC::M6, BASIC::V6>>& hessian_terms) const;
-
   bool addGTSAMFactorWithCovariance(const BASIC::SE3& pose,
-                                    const SE3Covariance& cov,
+                                    const adagraph::backend::Covariance6d& cov,
                                     double timestamp,
                                     const BASIC::SE3* map_to_odom);
   void addLocalizationFactors(const std::vector<MapObservation>& observations);
   gtsam::SharedNoiseModel localizationNoise(double fitness) const;
-  void fillOptimizedTrajectory(BackendResult& result) const;
 
   static gtsam::Pose3 toGtsamPose(const BASIC::SE3& pose);
   static BASIC::SE3 toBasicPose(const gtsam::Pose3& pose);
-
-  double base_sigma_t_ = 0.035;
-  double base_sigma_r_ = 0.012;
-
-  // Minimum eigenvalue of the accumulated Hessian H = sum_i J_i * w * J_i^T
-  // for a direction to be treated as observed. H carries the frontend
-  // observation weight w = 1/sigma^2 ~= 1000, so a single well-constrained
-  // point already contributes ~1e3 and informative directions over thousands
-  // of points reach ~1e5..1e7 (uncalibrated engineering initial value).
-  double hessian_eig_min_ = 1e3;
 
   gtsam::ISAM2 isam2_;
   // Raw frontend pose per keyframe, needed to form the between measurement of
@@ -90,13 +70,9 @@ private:
   // keyframe every kf_max_frames_ scans (~1 per 3 s at 10 Hz even when
   // stationary), i.e. tens of thousands of entries over a multi-hour run.
   std::deque<gtsam::Pose3> keyframe_poses_;
-  // Keyframe timestamps [s], parallel to keyframe_poses_ (trajectory export).
+  // Keyframe timestamps [s], parallel to keyframe_poses_ for associating
+  // asynchronous localization observations during rollback operation.
   std::vector<double> keyframe_timestamps_;
-  BASIC::SE3 last_keyframe_pose_;
-  int frames_since_last_keyframe_ = 0;
-  double kf_translation_thresh_ = 0.5;
-  double kf_rotation_thresh_ = 0.1;
-  int kf_max_frames_ = 30;
   bool initialized_ = false;
 
   // Prior-map localization results as unary factors (experimental, not yet
@@ -111,6 +87,10 @@ private:
   // A thrown ISAM2::update can leave the solver in an unusable state; once a
   // chain update fails, stop feeding it instead of crashing the frontend.
   bool isam_healthy_ = true;
+  adagraph::backend::BackendConfig config_;
+  std::unique_ptr<adagraph::backend::OdometryCovarianceEstimator>
+      covariance_estimator_;
+  bool has_explicit_config_ = false;
 };
 
 }  // namespace LI2Sup

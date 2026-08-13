@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "basic/alias.h"
+#include "adagraph/backend/odometry_covariance_estimator.h"
 #include "common/ds.h"
 #include "lio/adagraph_types.h"
 
@@ -22,6 +23,9 @@ public:
   };
 
   static FeatureFrame build(const Input& input);
+  static adagraph::backend::OdometryUncertaintyInput buildUncertaintyInput(
+      const FeatureFrame& frame,
+      const std::vector<std::pair<BASIC::M6, BASIC::V6>>& hessian_terms);
 
 private:
   static void fillRelativePose(const Input& input, FeatureFrame& frame);

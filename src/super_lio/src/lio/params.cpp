@@ -77,6 +77,9 @@ namespace LI2Sup{
   float g_kiss_matcher_voxel_size = 0.5f;
   bool g_kiss_matcher_use_quatro = false;
   bool g_kiss_matcher_use_voxel_sampling = true;
+  bool g_kiss_matcher_use_ratio_test = true;
+  bool g_kiss_matcher_adaptive_ratio_test = false;
+  bool g_kiss_matcher_deterministic_voxel_sampling = false;
   int g_kiss_matcher_min_final_inliers = 5;
   int g_kiss_matcher_max_source_points = 30000;
   int g_kiss_matcher_max_target_points = 120000;
@@ -95,6 +98,7 @@ namespace LI2Sup{
   int g_prior_map_loc_max_iterations = 30;
   int g_prior_map_loc_num_threads = 4;
   double g_prior_map_loc_max_fitness = 1.0;
+  double g_prior_map_loc_initial_max_fitness = 0.1;
   double g_prior_map_loc_max_translation = 2.0;
   double g_prior_map_loc_max_rotation_deg = 20.0;
   double g_prior_map_loc_lost_fitness = 2.0;

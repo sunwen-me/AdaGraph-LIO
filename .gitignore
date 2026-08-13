@@ -1,6 +1,8 @@
 build/
 install/
 log/
+CMakeFiles/
+symlink_install_manifest.txt
 Datasets/
 .mimocode/
 .vscode/

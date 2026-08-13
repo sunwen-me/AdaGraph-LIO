@@ -44,6 +44,16 @@
     lio.output.dense: true
     lio.output.pub_step: 2
     lio.output.grid_update_step: 1
+    # Keep scan-corrected pose/TF untouched, but make the odom twist safe for
+    # motion feedback by rejecting spikes and applying a short causal filter.
+    lio.output.odom_twist_filter.enable: true
+    lio.output.odom_twist_filter.zero_lateral_velocity: true
+    lio.output.odom_twist_filter.linear_time_constant: 0.08
+    lio.output.odom_twist_filter.angular_time_constant: 0.06
+    lio.output.odom_twist_filter.max_linear_speed: 0.80
+    lio.output.odom_twist_filter.max_angular_speed: 1.50
+    lio.output.odom_twist_filter.max_linear_acceleration: 1.50
+    lio.output.odom_twist_filter.max_angular_acceleration: 4.00
 
     lio.ground_robot.planar_constraint: true
     lio.ground_robot.base_z: 0.0
@@ -104,6 +114,12 @@
     lio.occupancy_grid.z_min: -0.585
     lio.occupancy_grid.z_max: 1.265
     lio.occupancy_grid.publish_period: 1.0
+    lio.occupancy_grid.source: "snapshot"
+    lio.occupancy_grid.update_policy: "lazy"
+    lio.occupancy_grid.rebuild.max_scratch_memory_mb: 64
+    lio.occupancy_grid.rebuild.max_points: 5000000
+    lio.occupancy_grid.rebuild.cancellation_check_interval: 4096
+    lio.occupancy_grid.max_materialized_cells: 16000000
     lio.occupancy_grid.map_padding: 1.0
     lio.occupancy_grid.inflation_radius: 0.0
     lio.occupancy_grid.use_unknown: true

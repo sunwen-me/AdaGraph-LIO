@@ -38,4 +38,18 @@
     lio.output.dense: true
     lio.output.pub_step: 5
 
+    # Prior-map recovery is enabled explicitly by the regression or launch
+    # override.  Keep its coarse KISS stage deterministic so retry latency is
+    # a data/quality signal rather than a TBB scheduling artifact.
+    lio.kiss_matcher.enable: false
+    lio.kiss_matcher.voxel_size: 0.5
+    lio.kiss_matcher.use_quatro: false
+    lio.kiss_matcher.use_voxel_sampling: true
+    lio.kiss_matcher.use_ratio_test: true
+    lio.kiss_matcher.adaptive_ratio_test: true
+    lio.kiss_matcher.deterministic_voxel_sampling: true
+    lio.kiss_matcher.min_final_inliers: 5
+    lio.kiss_matcher.max_source_points: 30000
+    lio.kiss_matcher.max_target_points: 120000
+
     lio.eva.timer: true

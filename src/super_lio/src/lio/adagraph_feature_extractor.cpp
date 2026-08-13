@@ -14,6 +14,23 @@ FeatureFrame AdaGraphFeatureExtractor::build(const Input& input) {
   return frame;
 }
 
+adagraph::backend::OdometryUncertaintyInput
+AdaGraphFeatureExtractor::buildUncertaintyInput(
+    const FeatureFrame& frame,
+    const std::vector<std::pair<BASIC::M6, BASIC::V6>>& hessian_terms) {
+  adagraph::backend::OdometryUncertaintyInput input;
+  input.inlier_ratio = frame.inlier_ratio;
+  input.condition_number = frame.condition_number;
+  input.hessian_trace = frame.hessian_trace;
+  input.effective_point_count = frame.effective_point_number;
+  input.angular_velocity_norm = frame.angular_velocity_norm;
+  input.has_information = !hessian_terms.empty();
+  for (const auto& term : hessian_terms) {
+    input.information += term.first.cast<double>();
+  }
+  return input;
+}
+
 void AdaGraphFeatureExtractor::fillRelativePose(const Input& input, FeatureFrame& frame) {
   frame.relative_translation =
       input.last_keyframe_pose.R_.transpose() * (input.current_pose.t_ - input.last_keyframe_pose.t_);

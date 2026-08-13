@@ -108,7 +108,7 @@ void ESKF::Update() {
   ba_ += dx_.template block<3, 1>(12, 0);
 
   g_ += dx_.template block<3, 1>(15, 0);
-  g_ = g_gravity_norm * (g_.normalized());
+  g_ = options_.gravity_norm_ * (g_.normalized());
 
   fw_R_ = R_;
   fw_p_ = p_;
@@ -157,8 +157,9 @@ bool ESKF::Predict(const IMUData& imu, DynamicState& state_imu, DynamicState& st
   forward_time_ = imu.secs;
   forward_last_imu_ = imu;
 
-  new_R.R_ = fw_R_.R_ * g_odom_robo.R_;
-  new_p = fw_R_.R_ * ( - g_odom_robo.R_ * g_odom_robo.t_) + fw_p_;
+  new_R.R_ = fw_R_.R_ * legacy_robot_rotation_;
+  new_p = fw_R_.R_ * (-legacy_robot_rotation_ * legacy_robot_translation_) +
+          fw_p_;
   state_robot.time = imu.secs;
   state_robot.R = new_R.R_;
   state_robot.p = new_p;

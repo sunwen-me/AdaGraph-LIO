@@ -31,6 +31,9 @@ using KeypointPair = std::tuple<std::vector<Eigen::Vector3f>, std::vector<Eigen:
 
 struct KISSMatcherConfig {
   bool use_voxel_sampling_ = true;
+  // Keep global-relocalization descriptors reproducible when a caller opts
+  // in.  The default preserves the upstream high-throughput sampling mode.
+  bool deterministic_voxel_sampling_ = false;
 
   // FPFH descriptor params
   float voxel_size_    = 0.3;
@@ -196,6 +199,10 @@ class KISSMatcher {
    */
   inline KeypointPair getProcessedInputClouds() { return {src_processed_, tgt_processed_}; }
 
+  inline std::pair<size_t, size_t> getProcessedInputSizes() const {
+    return {src_processed_.size(), tgt_processed_.size()};
+  }
+
   /**
    * @brief Retrieves keypoints detected from FasterPFH.
    * @note The number of these keypoints is slightly smaller than
@@ -204,12 +211,18 @@ class KISSMatcher {
    */
   inline KeypointPair getKeypointsFromFasterPFH() { return {src_keypoints_, tgt_keypoints_}; }
 
+  inline std::pair<size_t, size_t> getFasterPFHKeypointSizes() const {
+    return {src_keypoints_.size(), tgt_keypoints_.size()};
+  }
+
   /**
    * @brief Retrieves keypoints from the initial matching stage.
    * @note This function should be called after `match` function
    * @return A pair of initially matched keypoints.
    */
   inline KeypointPair getKeypointsFromInitialMatching() { return {src_matched_, tgt_matched_}; }
+
+  inline size_t getNumInitialMatches() const { return src_matched_.size(); }
 
   /**
    * @brief Retrieves the initial correspondences before refinement.

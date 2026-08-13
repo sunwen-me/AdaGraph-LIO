@@ -51,7 +51,7 @@ Visualization Manager:
       Length: 100
       Name: Axes
       Radius: 0.10000000149011612
-      Reference Frame: world
+      Reference Frame: odom
       Value: true
     - Alpha: 0.699999988079071
       Autocompute Intensity Bounds: true
@@ -64,14 +64,14 @@ Visualization Manager:
       Class: rviz_default_plugins/PointCloud2
       Color: 255; 255; 255
       Color Transformer: AxisColor
-      Decay Time: 2000
+      Decay Time: 0
       Enabled: true
       Invert Rainbow: true
       Max Color: 255; 255; 255
       Max Intensity: 150
       Min Color: 0; 0; 0
       Min Intensity: 0
-      Name: map
+      Name: Prior Map
       Position Transformer: XYZ
       Selectable: true
       Size (Pixels): 1
@@ -79,10 +79,10 @@ Visualization Manager:
       Style: Points
       Topic:
         Depth: 5
-        Durability Policy: Volatile
+        Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /lio/cloud_world
+        Value: /lio/global_map
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
@@ -104,7 +104,7 @@ Visualization Manager:
       Max Intensity: 152
       Min Color: 0; 0; 0
       Min Intensity: 0
-      Name: current
+      Name: Current Registered Cloud
       Position Transformer: XYZ
       Selectable: true
       Size (Pixels): 3
@@ -275,7 +275,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 36; 31; 49
-    Fixed Frame: world
+    Fixed Frame: odom
     Frame Rate: 30
   Name: root
   Tools:

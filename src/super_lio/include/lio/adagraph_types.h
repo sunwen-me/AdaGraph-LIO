@@ -66,9 +66,6 @@ struct BackendResult {
   BASIC::SE3 optimized_pose;
   Eigen::Matrix<double, 6, 1> sigmas = Eigen::Matrix<double, 6, 1>::Zero();
   std::size_t keyframe_count = 0;
-  // Optimized map-frame keyframe trajectory {timestamp [s], pose}; filled
-  // only when localization factors are enabled.
-  std::vector<std::pair<double, BASIC::SE3>> optimized_trajectory;
 };
 
 }  // namespace LI2Sup

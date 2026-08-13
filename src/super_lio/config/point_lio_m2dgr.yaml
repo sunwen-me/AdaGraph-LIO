@@ -1,0 +1,83 @@
+/**:
+  ros__parameters:
+    # M2DGR: Velodyne VLP-32C + Handsfree A9 IMU.
+    lidar_topic: "/velodyne_points"
+    imu_topic: "/handsfree/imu"
+    lidar_type: "velodyne_pointcloud2"
+    lidar_frame: "velodyne"
+    save_pcd: false
+
+    # Offline bags can burst while the executor catches up. Reliable, deep
+    # input queues prevent the estimator event stream from changing between
+    # repeated replays. AdaGraph/mapping run on a separate bounded worker.
+    point_lio.input.reliable: true
+    point_lio.input.lidar_queue_depth: 128
+    point_lio.input.imu_queue_depth: 4000
+    point_lio.backend.queue_capacity: 16
+
+    # Small Point-LIO frontend.
+    point_filter_num: 1
+    min_distance: 1.0
+    max_distance: 100.0
+    space_downsample: true
+    # 0.2 m retained all source frames at 5x replay and improved room_01 APE;
+    # 0.15 m was measurably slower and could not drain point updates at 5x.
+    space_downsample_leaf_size: 0.2
+
+    gravity: [0.0, 0.0, -9.805]
+    fix_gravity_direction: true
+    check_satu: true
+    satu_acc: 30.0
+    satu_gyro: 35.0
+    # M2DGR sensor_msgs/Imu acceleration is already in m/s^2.
+    acc_norm: 9.805
+
+    map_resolution: 0.2
+    init_map_size: 100
+
+    extrinsic_est_en: false
+    # Official M2DGR lidar -> Handsfree IMU calibration.
+    extrinsic_T: [0.27255, -0.00053, 0.17954]
+    extrinsic_R: [1.0, 0.0, 0.0,
+                  0.0, 1.0, 0.0,
+                  0.0, 0.0, 1.0]
+
+    laser_point_cov: 0.01
+    imu_meas_acc_cov: 0.01
+    imu_meas_omg_cov: 0.01
+    velocity_cov: 20.0
+    acceleration_cov: 500.0
+    omg_cov: 1000.0
+    ba_cov: 0.0001
+    bg_cov: 0.0001
+    plane_threshold: 0.1
+    match_sqaured: 81.0
+    publish_odometry_without_downsample: false
+
+    # Shared AdaGraph-LIO output/backend settings for offline evaluation.
+    lio.map.save_map: false
+    lio.extrinsic.odom_robo: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    lio.output.robot: false
+    lio.output.map: false
+    lio.output.dense: false
+    lio.output.pub_step: 1
+    lio.output.grid_update_step: 10
+    lio.output.path_max_poses: 20000
+    lio.output.odom_twist_filter.enable: false
+    lio.ground_robot.planar_constraint: false
+    lio.nav2_tf.enable: false
+    lio.kiss_matcher.enable: false
+    lio.kiss_matcher.voxel_size: 0.5
+    lio.kiss_matcher.use_quatro: false
+    lio.kiss_matcher.use_voxel_sampling: true
+    lio.kiss_matcher.use_ratio_test: true
+    lio.kiss_matcher.adaptive_ratio_test: true
+    lio.kiss_matcher.deterministic_voxel_sampling: true
+    lio.kiss_matcher.min_final_inliers: 5
+    lio.kiss_matcher.max_source_points: 30000
+    lio.kiss_matcher.max_target_points: 120000
+    lio.prior_map_localization.enable: false
+    lio.backend.use_localization_factor: false
+    lio.backend.drive_map_to_odom: false
+    lio.occupancy_grid.enable: false
+    lio.eva.timer: true

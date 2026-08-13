@@ -2,14 +2,23 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 #include "lio/adagraph_log.h"
-#include "lio/params.h"
+#include "lio/adagraph_feature_extractor.h"
 
 namespace LI2Sup {
 
-void AdaGraphBackend::init() {
+void AdaGraphBackend::initWithConfig() {
   if (initialized_) return;
+
+  if (const auto error = config_.validate()) {
+    throw std::invalid_argument("invalid AdaGraph backend config: " + *error);
+  }
+
+  covariance_estimator_ =
+      std::make_unique<adagraph::backend::OdometryCovarianceEstimator>(
+          config_);
 
   ADAGRAPH_LOG_INFO("Initializing backend...");
 
@@ -18,13 +27,11 @@ void AdaGraphBackend::init() {
   params.relinearizeSkip = 1;
   isam2_ = gtsam::ISAM2(params);
 
-  last_keyframe_pose_ = BASIC::SE3();
-
-  use_localization_factor_ = g_backend_use_localization_factor;
-  loc_sigma_t_ = g_backend_loc_factor_sigma_t;
-  loc_sigma_r_ = g_backend_loc_factor_sigma_r;
-  loc_fitness_ref_ = g_backend_loc_factor_fitness_ref;
-  loc_max_time_diff_ = g_backend_loc_factor_max_time_diff;
+  use_localization_factor_ = config_.use_localization_factor;
+  loc_sigma_t_ = config_.localization_translation_sigma_m;
+  loc_sigma_r_ = config_.localization_rotation_sigma_rad;
+  loc_fitness_ref_ = config_.localization_fitness_reference;
+  loc_max_time_diff_ = config_.localization_max_time_difference_s;
   if (use_localization_factor_) {
     ADAGRAPH_LOG_WARN("Prior-map localization factors enabled"
                       " (experimental, not yet validated on a real robot).");
@@ -32,23 +39,6 @@ void AdaGraphBackend::init() {
 
   initialized_ = true;
   ADAGRAPH_LOG_INFO("Backend initialized.");
-}
-
-bool AdaGraphBackend::isKeyframe(const BASIC::SE3& current_pose) const {
-  BASIC::V3 translation_diff = current_pose.t_ - last_keyframe_pose_.t_;
-  double translation_norm = translation_diff.norm();
-
-  BASIC::M3 rotation_diff = current_pose.R_ * last_keyframe_pose_.R_.transpose();
-  Eigen::AngleAxisd aa(rotation_diff.cast<double>());
-  double rotation_angle = std::abs(aa.angle());
-
-  return (translation_norm > kf_translation_thresh_ ||
-          rotation_angle > kf_rotation_thresh_ ||
-          frames_since_last_keyframe_ >= kf_max_frames_);
-}
-
-void AdaGraphBackend::noteNonKeyframe() {
-  ++frames_since_last_keyframe_;
 }
 
 BackendResult AdaGraphBackend::processKeyframe(
@@ -61,13 +51,16 @@ BackendResult AdaGraphBackend::processKeyframe(
   BackendResult result;
   if (!initialized_) return result;
 
-  SE3Covariance cov = predictSE3Covariance(frame, hessian_terms);
-
-  last_keyframe_pose_ = pose;
-  frames_since_last_keyframe_ = 0;
+  const auto uncertainty =
+      AdaGraphFeatureExtractor::buildUncertaintyInput(frame, hessian_terms);
+  const adagraph::backend::Covariance6d cov =
+      covariance_estimator_->estimate(uncertainty);
 
   result.optimized_pose = pose;
-  result.sigmas = cov.getSigmas();
+  for (int index = 0; index < 6; ++index) {
+    result.sigmas(index) =
+        std::sqrt(std::max(cov(index, index), 1e-10));
+  }
   result.keyframe_count = keyframe_poses_.size();
 
   if (!isam_healthy_) {
@@ -98,131 +91,14 @@ BackendResult AdaGraphBackend::processKeyframe(
   result.optimized = use_localization_factor_ && loc_factor_count_ > 0;
   result.keyframe_count = keyframe_poses_.size();
 
-  if (use_localization_factor_) {
-    fillOptimizedTrajectory(result);
-  }
-
   ADAGRAPH_LOG_INFO("Keyframe " << result.keyframe_count
                     << ", sigmas: [" << result.sigmas.transpose() << "]");
   return result;
 }
 
-AdaGraphBackend::ScaleFactors AdaGraphBackend::computeRuleBasedScales(const FeatureFrame& frame) const {
-  double s_t = 1.0, s_r = 1.0;
-
-  if (frame.inlier_ratio < 0.3) {
-    s_t *= 3.0;
-    s_r *= 3.0;
-  } else if (frame.inlier_ratio < 0.5) {
-    s_t *= 2.0;
-    s_r *= 2.0;
-  } else if (frame.inlier_ratio < 0.7) {
-    s_t *= 1.3;
-    s_r *= 1.3;
-  }
-
-  // Condition number of the true 6x6 Hessian. Well-conditioned scans land
-  // around 1e2..1e3 (the rotation/translation blocks carry different units);
-  // directional degeneracy pushes it to 1e4+. Thresholds are uncalibrated
-  // engineering initial values.
-  if (frame.condition_number > 1e4) {
-    s_t *= 3.0;
-    s_r *= 3.0;
-  } else if (frame.condition_number > 1e3) {
-    s_t *= 2.0;
-    s_r *= 2.0;
-  }
-
-  // Trace of H with its 1/sigma^2 ~= 1000 observation weight is ~1e7 for a
-  // typical scan; below 1e5 the total observation strength is unusually weak
-  // (uncalibrated engineering initial value).
-  if (frame.hessian_trace < 1e5) {
-    s_t *= 1.5;
-    s_r *= 1.5;
-  }
-
-  // Downsampled scans (0.5 m voxel) typically hold a few thousand points
-  // (frontend buffers cap at 20000); below ~1500 the scan is unusually
-  // sparse (uncalibrated engineering initial value).
-  if (frame.effective_point_number < 1500) {
-    s_t *= 1.5;
-    s_r *= 1.5;
-  }
-
-  if (frame.angular_velocity_norm > 1.0) {
-    s_r *= 2.0;
-    s_t *= 1.5;
-  }
-
-  s_t = std::clamp(s_t, 0.5, 10.0);
-  s_r = std::clamp(s_r, 0.5, 10.0);
-
-  return {s_t, s_r};
-}
-
-Eigen::Matrix<double, 6, 1> AdaGraphBackend::SE3Covariance::getSigmas() const {
-  Eigen::Matrix<double, 6, 1> sigmas;
-  for (int i = 0; i < 6; ++i) {
-    sigmas(i) = std::sqrt(std::max(cov(i, i), 1e-10));
-  }
-  return sigmas;
-}
-
-gtsam::noiseModel::Gaussian::shared_ptr AdaGraphBackend::SE3Covariance::toGTSAMNoise() const {
-  return gtsam::noiseModel::Gaussian::Covariance(cov);
-}
-
-AdaGraphBackend::SE3Covariance AdaGraphBackend::predictSE3Covariance(
-    const FeatureFrame& frame,
-    const std::vector<std::pair<BASIC::M6, BASIC::V6>>& hessian_terms) const {
-  SE3Covariance result;
-
-  ScaleFactors scales = computeRuleBasedScales(frame);
-  double sigma_r = base_sigma_r_ * scales.s_r;
-  double sigma_t = base_sigma_t_ * scales.s_t;
-  Eigen::Matrix<double, 6, 6> rule_cov = Eigen::Matrix<double, 6, 6>::Zero();
-  rule_cov.diagonal().head<3>().setConstant(sigma_r * sigma_r);
-  rule_cov.diagonal().tail<3>().setConstant(sigma_t * sigma_t);
-
-  if (hessian_terms.empty()) {
-    result.cov = rule_cov;
-    return result;
-  }
-
-  // Information is additive: sum (not average) the per-term Hessians.
-  Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
-  for (const auto& hr : hessian_terms) {
-    H += hr.first.cast<double>();
-  }
-
-  Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>> solver(H);
-  const auto& eigenvalues = solver.eigenvalues();
-  const auto& eigenvectors = solver.eigenvectors();
-
-  if (eigenvalues.maxCoeff() < hessian_eig_min_) {
-    result.cov = rule_cov;
-    return result;
-  }
-
-  // Per-direction blend: directions the Hessian observes (eigenvalue above
-  // hessian_eig_min_) take their variance from the information matrix; for
-  // degenerate directions the rule-based variance is injected, projected onto
-  // that eigen-direction.
-  Eigen::Matrix<double, 6, 6> blended = Eigen::Matrix<double, 6, 6>::Zero();
-  for (int i = 0; i < 6; ++i) {
-    Eigen::Matrix<double, 6, 1> v = eigenvectors.col(i);
-    double variance = (eigenvalues(i) >= hessian_eig_min_)
-                          ? 1.0 / eigenvalues(i)
-                          : v.dot(rule_cov * v);
-    blended += variance * v * v.transpose();
-  }
-  result.cov = blended;
-
-  return result;
-}
-
 bool AdaGraphBackend::addGTSAMFactorWithCovariance(
-    const BASIC::SE3& pose, const SE3Covariance& cov, double timestamp,
+    const BASIC::SE3& pose,
+    const adagraph::backend::Covariance6d& cov, double timestamp,
     const BASIC::SE3* map_to_odom) {
   gtsam::NonlinearFactorGraph new_factors;
   gtsam::Values new_values;
@@ -254,7 +130,7 @@ bool AdaGraphBackend::addGTSAMFactorWithCovariance(
     gtsam::Pose3 prev_pose = keyframe_poses_[kf_id - 1];
     gtsam::Pose3 relative_pose = prev_pose.inverse() * odom_pose;
 
-    auto gaussian_noise = cov.toGTSAMNoise();
+    auto gaussian_noise = gtsam::noiseModel::Gaussian::Covariance(cov);
     auto robust_noise = gtsam::noiseModel::Robust::Create(
         gtsam::noiseModel::mEstimator::Huber::Create(1.345), gaussian_noise);
 
@@ -348,26 +224,6 @@ gtsam::SharedNoiseModel AdaGraphBackend::localizationNoise(double fitness) const
           .finished());
   return gtsam::noiseModel::Robust::Create(
       gtsam::noiseModel::mEstimator::Huber::Create(1.345), gaussian);
-}
-
-void AdaGraphBackend::fillOptimizedTrajectory(BackendResult& result) const {
-  // Full back-substitution over all keyframes: O(n) per keyframe, acceptable
-  // at keyframe cadence but worth revisiting for multi-hour runs.
-  gtsam::Values estimate;
-  try {
-    estimate = isam2_.calculateEstimate();
-  } catch (const std::exception& e) {
-    LOG(ERROR) << " ---> [AdaGraph]: full calculateEstimate failed: " << e.what();
-    return;
-  }
-
-  result.optimized_trajectory.reserve(keyframe_timestamps_.size());
-  for (std::size_t i = 0; i < keyframe_timestamps_.size(); ++i) {
-    const gtsam::Symbol key('x', i);
-    if (!estimate.exists(key)) continue;
-    result.optimized_trajectory.emplace_back(
-        keyframe_timestamps_[i], toBasicPose(estimate.at<gtsam::Pose3>(key)));
-  }
 }
 
 gtsam::Pose3 AdaGraphBackend::toGtsamPose(const BASIC::SE3& pose) {

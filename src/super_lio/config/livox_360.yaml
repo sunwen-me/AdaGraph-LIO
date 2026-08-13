@@ -14,7 +14,7 @@
     # 9: livox_ros_driver2 PointCloud2 (PointXYZRTLT, xfer_format=0)
     # Livox_mid360.py exposes this parameter as the lidar_type launch argument.
     lio.sensor.lidar_type: 1
-    lio.sensor.blind: 2.0
+    lio.sensor.blind: 0.3
     lio.sensor.maxrange: 60.0
     lio.sensor.filter_rate: 3
     lio.sensor.voxel_fliter_size: 0.5
@@ -45,6 +45,16 @@
     lio.output.dense: true
     lio.output.pub_step: 1
     lio.output.grid_update_step: 1
+    # The pose/TF stays scan-corrected; only the instantaneous odom twist is
+    # gated and smoothed for ground-robot control feedback.
+    lio.output.odom_twist_filter.enable: true
+    lio.output.odom_twist_filter.zero_lateral_velocity: true
+    lio.output.odom_twist_filter.linear_time_constant: 0.08
+    lio.output.odom_twist_filter.angular_time_constant: 0.06
+    lio.output.odom_twist_filter.max_linear_speed: 0.60
+    lio.output.odom_twist_filter.max_angular_speed: 1.20
+    lio.output.odom_twist_filter.max_linear_acceleration: 1.00
+    lio.output.odom_twist_filter.max_angular_acceleration: 3.00
 
     lio.ground_robot.planar_constraint: true
     lio.ground_robot.base_z: 0.0
@@ -57,25 +67,30 @@
     lio.nav2_tf.imu_frame: "imu"
 
     lio.kiss_matcher.enable: false
-    lio.kiss_matcher.voxel_size: 0.5
+    lio.kiss_matcher.voxel_size: 0.2
     lio.kiss_matcher.use_quatro: false
     lio.kiss_matcher.use_voxel_sampling: true
+    lio.kiss_matcher.use_ratio_test: true
+    lio.kiss_matcher.adaptive_ratio_test: true
+    lio.kiss_matcher.deterministic_voxel_sampling: true
+    # KISS proposes a coarse pose; strict VGICP fitness gating validates it.
     lio.kiss_matcher.min_final_inliers: 5
     lio.kiss_matcher.max_source_points: 30000
     lio.kiss_matcher.max_target_points: 120000
 
     lio.prior_map_localization.enable: false
     lio.prior_map_localization.map_file: ""
-    lio.prior_map_localization.map_voxel_size: 0.5
-    lio.prior_map_localization.local_voxel_size: 0.5
+    lio.prior_map_localization.map_voxel_size: 0.1
+    lio.prior_map_localization.local_voxel_size: 0.1
     lio.prior_map_localization.local_frames: 8
     lio.prior_map_localization.min_frame_interval: 5
     lio.prior_map_localization.crop_radius: 40.0
     lio.prior_map_localization.max_target_points: 120000
     lio.prior_map_localization.max_source_points: 50000
-    lio.prior_map_localization.max_iterations: 30
+    lio.prior_map_localization.max_iterations: 100
     lio.prior_map_localization.num_threads: 4
-    lio.prior_map_localization.max_fitness: 1.0
+    lio.prior_map_localization.max_fitness: 0.1
+    lio.prior_map_localization.initial_max_fitness: 0.01
     lio.prior_map_localization.max_translation: 2.0
     lio.prior_map_localization.max_rotation_deg: 20.0
     lio.prior_map_localization.lost_fitness: 2.0
@@ -94,7 +109,7 @@
     lio.backend.loc_factor_fitness_ref: 0.1    # fitness that doubles the sigmas
     lio.backend.loc_factor_max_time_diff: 0.15 # observation-to-keyframe gate [s]
 
-    lio.occupancy_grid.enable: false
+    lio.occupancy_grid.enable: true
     lio.occupancy_grid.topic: "/map"
     lio.occupancy_grid.frame_id: "map"
     lio.occupancy_grid.resolution: 0.1
@@ -102,11 +117,17 @@
     lio.occupancy_grid.z_min: -0.3
     lio.occupancy_grid.z_max: 2.0
     lio.occupancy_grid.publish_period: 1.0
+    lio.occupancy_grid.source: "snapshot"
+    lio.occupancy_grid.update_policy: "lazy"
+    lio.occupancy_grid.rebuild.max_scratch_memory_mb: 64
+    lio.occupancy_grid.rebuild.max_points: 5000000
+    lio.occupancy_grid.rebuild.cancellation_check_interval: 4096
+    lio.occupancy_grid.max_materialized_cells: 16000000
     lio.occupancy_grid.map_padding: 1.0
     lio.occupancy_grid.inflation_radius: 0.0
     lio.occupancy_grid.use_unknown: true
     lio.occupancy_grid.reset_on_global_map: true
-    lio.occupancy_grid.ground_filter.enable: false
+    lio.occupancy_grid.ground_filter.enable: true
     lio.occupancy_grid.ground_filter.cell_size_x: 1.0
     lio.occupancy_grid.ground_filter.cell_size_y: 1.0
     lio.occupancy_grid.ground_filter.cell_size_z: 10.0

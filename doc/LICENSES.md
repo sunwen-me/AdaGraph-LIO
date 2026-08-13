@@ -10,6 +10,7 @@ GPLv3 声明继承自上游。下表列出仓库内 vendored 的第三方组件�
 
 | 组件 | 树内位置 | 来源 | 许可 |
 |---|---|---|---|
+| Small Point-LIO | `src/super_lio/3rdparty/small_point_lio` | <https://github.com/Yancey2023/small_point_lio>,ROS 2 分支 commit `b8775430` | MIT(树内 `LICENSE.txt`,Copyright 2025 Yingjie Huang);本仓修改说明见 `UPSTREAM.md` |
 | fast_gicp | `src/super_lio/3rdparty/fast_gicp` | <https://github.com/SMRT-AIST/fast_gicp> | BSD-3-Clause(树内 `LICENSE`,Copyright 2020 SMRT-AIST) |
 | KISS-Matcher | `src/super_lio/3rdparty/kiss_matcher` | <https://github.com/MIT-SPARK/KISS-Matcher> | 源码头标注 "Copyright 2024 MIT ... See LICENSE",但 vendored 副本未携带 LICENSE 文件;上游仓库为 MIT,**待确认并需补齐许可文本** |
 | KISS-Matcher 内嵌 kdtree/points | `src/super_lio/3rdparty/kiss_matcher/core/kiss_matcher/{kdtree,points}` | small_gicp(Kenji Koide) | MIT(源码头 SPDX: `SPDX-License-Identifier: MIT`,Copyright 2024 Kenji Koide) |
