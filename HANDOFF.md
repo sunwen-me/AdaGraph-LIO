@@ -934,6 +934,13 @@ Priorities for the next session:
 13. **Do not enable AdaGraph absolute localization factors on the real robot
     yet.** `lio.backend.use_localization_factor` and
     `lio.backend.drive_map_to_odom` remain experimental and default false.
+14. **Keep the clean package installation check in the release workflow.** On
+    `b10d8eb`, independently configured `basic` and `super_lio` clean trees
+    passed CTest `2/2` and `16/16`, respectively, and installed exactly
+    `point_lio_node`, `super_lio_node`, and `adagraph_dataset_runner`. An
+    earlier install failure was only an interrupted full build before
+    `point_lio_node` linked; the declared target built and installed cleanly
+    with no source or CMake change.
 
 ## 18. New Session Startup Checklist
 
