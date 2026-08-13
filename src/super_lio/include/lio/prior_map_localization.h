@@ -145,8 +145,9 @@ private:
   BASIC::CloudPtr buildLocalSubmap(
       const BASIC::SE3& T_odom_base);
   BASIC::CloudPtr cropPriorMap(const BASIC::SE3& predicted_map_lidar);
-  BASIC::CloudPtr downsampleCloud(const BASIC::CloudPtr& cloud, float leaf_size) const;
-  BASIC::CloudPtr limitCloudSize(const BASIC::CloudPtr& cloud, int max_points) const;
+  BASIC::CloudPtr downsampleCloud(
+      const BASIC::PointCloudType::ConstPtr& cloud, float leaf_size) const;
+  BASIC::CloudPtr limitCloudSize(BASIC::CloudPtr cloud, int max_points) const;
   RegistrationResult runRegistration(const BASIC::CloudPtr& source_base,
                                      const BASIC::CloudPtr& target_map,
                                      const BASIC::SE3& initial_map_odom,

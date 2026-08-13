@@ -20,6 +20,9 @@ struct RelocalizationConfig {
   double crop_radius_m = 50.0;
   double crop_grid_cell_size_m = 10.0;
   std::size_t max_source_points = 20'000;
+  // Bounded retained input for the local registration/KISS history. The
+  // final registration source remains separately limited by max_source_points.
+  std::size_t max_local_history_points = 20'000;
   std::size_t max_target_points = 100'000;
   std::size_t max_registration_iterations = 64;
   std::size_t registration_threads = 1;
@@ -53,7 +56,8 @@ struct RelocalizationConfig {
         crop_grid_cell_size_m <= 0.0) {
       return "relocalization crop sizes must be finite and positive";
     }
-    if (max_source_points == 0 || max_target_points == 0) {
+    if (max_source_points == 0 || max_local_history_points == 0 ||
+        max_target_points == 0) {
       return "relocalization point limits must be greater than zero";
     }
     if (max_registration_iterations == 0 || registration_threads == 0) {

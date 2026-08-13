@@ -41,6 +41,7 @@ bool PriorMapLocalization::init(
   config.crop_grid_cell_size_m = g_prior_map_loc_crop_grid_cell_size;
   config.max_source_points = g_prior_map_loc_max_source_points > 0
       ? static_cast<std::size_t>(g_prior_map_loc_max_source_points) : 0;
+  config.max_local_history_points = config.max_source_points;
   config.max_target_points = g_prior_map_loc_max_target_points > 0
       ? static_cast<std::size_t>(g_prior_map_loc_max_target_points) : 0;
   config.max_registration_iterations = g_prior_map_loc_max_iterations > 0

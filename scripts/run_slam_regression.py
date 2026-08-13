@@ -114,6 +114,52 @@ def evaluate_acceptance(
                 f"{float(maximum_ape):.6f}"
             )
 
+    memory_acceptance = acceptance.get("memory")
+    if memory_acceptance is not None:
+        if not isinstance(memory_acceptance, dict):
+            failures.append("memory acceptance field is not an object")
+        else:
+            resources = summary.get("resources", {})
+            diagnostics = summary.get("diagnostics", {})
+            if not isinstance(resources, dict):
+                resources = {}
+            if not isinstance(diagnostics, dict):
+                diagnostics = {}
+
+            maximum_rss_kib = memory_acceptance.get("maximum_rss_kib")
+            if maximum_rss_kib is not None:
+                rss_kib = resources.get("maximum_resident_set_kib")
+                if rss_kib is None:
+                    failures.append("maximum resident-set diagnostic is missing")
+                elif int(rss_kib) > int(maximum_rss_kib):
+                    failures.append(
+                        f"maximum RSS {rss_kib} KiB > budget "
+                        f"{maximum_rss_kib} KiB"
+                    )
+
+            maximum_local_history_backing_bytes = memory_acceptance.get(
+                "maximum_local_history_backing_bytes"
+            )
+            if maximum_local_history_backing_bytes is not None:
+                prior_map_memory = diagnostics.get("prior_map_memory", {})
+                if not isinstance(prior_map_memory, dict):
+                    prior_map_memory = {}
+                local_history_bytes = prior_map_memory.get(
+                    "local_frame_backing_bytes"
+                )
+                if local_history_bytes is None:
+                    failures.append(
+                        "prior-map local-history memory diagnostic is missing"
+                    )
+                elif int(local_history_bytes) > int(
+                    maximum_local_history_backing_bytes
+                ):
+                    failures.append(
+                        "prior-map local-history backing "
+                        f"{local_history_bytes} B > budget "
+                        f"{maximum_local_history_backing_bytes} B"
+                    )
+
     if acceptance.get("require_backend_chain_consistency", False):
         diagnostics = summary.get("diagnostics", {})
         scheduler = (
@@ -739,6 +785,17 @@ def run_case(
         if not prior_path.is_absolute():
             prior_path = repo_root / prior_path
         environment["PRIOR_MAP_FILE"] = str(prior_path.resolve())
+
+    prior_map = case.get("prior_map")
+    if prior_map is not None:
+        if prior_map_file is None:
+            raise ValueError(f"case {case_id}: prior_map requires prior_map_file")
+        if not isinstance(prior_map, dict):
+            raise ValueError(f"case {case_id}: prior_map is not an object")
+        if "registration_threads" in prior_map:
+            environment["PRIOR_MAP_REGISTRATION_THREADS"] = str(
+                prior_map["registration_threads"]
+            )
 
     print(f"[ RUN      ] {case_id}", flush=True)
     process = subprocess.run(command, env=environment, check=False)

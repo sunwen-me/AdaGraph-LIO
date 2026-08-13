@@ -1726,6 +1726,10 @@ TEST(Config, IndependentInstancesValidateWithoutRos) {
   EXPECT_TRUE(indoor_frontend.validate());
   EXPECT_TRUE(backend.validate());
   EXPECT_TRUE(relocalization.validate());
+
+  relocalization = {};
+  relocalization.max_local_history_points = 0;
+  EXPECT_TRUE(relocalization.validate());
 }
 
 }  // namespace

@@ -20,6 +20,8 @@ class ParseNodeDiagnosticsTest(unittest.TestCase):
                 "123/257/1000000/8192, "
                 "preprocess(queued_points/queued_imus/vectors)=4/5/4096, "
                 "frame_vectors=2048 bytes",
+                "[PipelineRuntimeMemory]: rss/allocated/retained="
+                "14000/28000/42000",
                 "[BackendScheduler]: enqueued/processed/failed=8/8/0, "
                 "keyframe_clouds(unique/points/logical/backing)=6/700/22400/32768",
                 "[PriorMapLocalizationMemory]: prior(points/backing)=200/6400, "
@@ -42,6 +44,10 @@ class ParseNodeDiagnosticsTest(unittest.TestCase):
         self.assertEqual(
             diagnostics["point_lio_memory"]["preprocess_vector_backing_bytes"],
             4096,
+        )
+        self.assertEqual(
+            diagnostics["pipeline_runtime_memory"]["glibc_retained_bytes"],
+            42000,
         )
         self.assertEqual(
             diagnostics["map_keyframe_memory"]["unique_cloud_backing_bytes"],

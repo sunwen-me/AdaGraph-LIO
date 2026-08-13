@@ -817,6 +817,11 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_summarize_tum.py
   )
   add_test(
+    NAME test_slam_regression_acceptance
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_run_slam_regression.py
+  )
+  add_test(
     NAME test_core_boundary_dependencies
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/verify_core_boundaries.py

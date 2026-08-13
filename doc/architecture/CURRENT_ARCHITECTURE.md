@@ -223,6 +223,18 @@ The standard Super-LIO and Point-LIO compositions no longer let the localization
 
 Production prior-map queries now pass through `RelocalizationScheduler` and the concrete `ComposedRelocalizer` adapters: `PclKissCandidateRetriever` recovers the immutable PCL source/map owners, while `PclRegistrationVerifier` crops the target and runs FastVGICP or PCL GICP. `PriorMapLocalization` keeps no mutable persistent prior-map owner; `LocalizationMap` owns the loaded/downsampled target and the crop grid stores only derived indices accessed through a const PCL alias. The adapters do not rematerialize the current query cloud at the typed boundary. For deployments that enable it, the coarse KISS input uses stable serial voxel reduction and evaluates the configured ratio-test mode plus its alternate; candidate/verifier diagnostics identify which strict VGICP/GICP check accepted or rejected each path. This makes startup/recovery latency a reproducible gate without relaxing the legacy stateful fitness/jump gate, which remains above the generic verifier in `PriorMapLocalization`. Non-interruptible vendor calls use finish-active/publish with one newest pending query. Scheduler shutdown reports queue-wait, processing and end-to-end latency, while the prior-map adapter reports startup/LOST KISS attempts, outcomes and first-success delay; both standard frontend regressions gate these diagnostics. This is the sole supported prior-map relocalization implementation.
 
+`RelocalizationConfig::max_local_history_points` bounds retained local input
+before it becomes the KISS/registration frame history. Each frame is voxelized
+at the existing source leaf size and receives an even share of the total
+budget; the final registration source remains independently bounded by
+`max_source_points`. The standard ROS/YAML and DatasetRunner paths parse the
+field, while the retained global-compat adapter derives it from its existing
+source-point budget rather than adding another global parameter. In the final
+recorded Point-LIO prior-map run, this reduced retained history from 406,776
+points / 13,016,832 B to 9,002 points / 288,064 B. This changes only the
+bounded history representation, not Point-LIO local odometry, KeyFrames or the
+final registration point cap.
+
 ### Phase 7 occupancy/map-IO boundary now present
 
 `adagraph_mapping_core` now includes the ROS-independent `OccupancyGridBuilder`,

@@ -219,6 +219,14 @@ not current Point-LIO functionality blockers:
 - [x] Remove the second `SuperLIOReLoc` implementation and make the standard `PriorMapLocalization` path the sole supported relocalizer composition.
 - [x] Remove backend/localization/ROS global-correction feedback ownership cycle from the standard Super-LIO and Point-LIO compositions; no second relocation executable remains.
 - [x] Introduce explicit immutable point-cloud ownership across async boundaries.
+- [x] Bound `PriorMapLocalization` retained local-frame history before it
+  crosses into KISS/registration ownership. The new
+  `max_local_history_points` budget is parsed by standard ROS/YAML and the
+  ROS-free runner; the retained global compatibility adapter derives the same
+  limit from its existing source-point setting rather than growing a new global
+  parameter surface. The recorded Point-LIO prior-map default-allocator run
+  reduced history from 406,776 points / 13,016,832 B to 9,002 points /
+  288,064 B without changing quality/latency gates.
 - [~] Bound/remove duplicate accumulated global point maps. Standard Point-LIO no longer retains an accumulated owner and saves from `MapSnapshot`; Super-LIO retains a bounded fragment buffer only for temporary legacy fragment-save compatibility. Do not invest in further Super fragment optimization: remove it with Super-LIO after the recorded Point-LIO convergence gates pass.
 - [x] Separate occupancy storage/building from ROS publication and reduce lock scope. The builder remains single-writer under a short adapter mutex; dense snapshot and ROS message conversion are outside that lock.
 - [x] Define and validate task-specific queue/backpressure/cancellation policies. Frontend, accepted KeyFrame/backend, relocalization, occupancy latest-only snapshot rebuild/publication and reliable fragment/final map-save policies are explicit; recorded-data budget runs account for every Snapshot rebuild outcome and bound scratch usage.
@@ -257,7 +265,13 @@ not current Point-LIO functionality blockers:
 - Occupancy Snapshot rebuild is available and core-tested. Enabled standard configs now use the Snapshot source and a dedicated rebuild worker. Live enabled regressions prove `/map`, `world` frame and `0.1 m` resolution for both sources on both frontends. Snapshot and online intentionally differ in origin/extent and free/unknown evidence because their input products differ; the comparison JSON records this instead of silently treating it as equality. Prior-map PCL reset remains an explicit compatibility path.
 - `PriorMapLocalization` still owns the current PCL/KISS/VGICP tracking implementation and its internal predicted alignment for registration. External semantic authority is `GlobalAlignmentState`; the adapter is scheduler-backed and its startup/recovery and latency diagnostics are gated. Remaining work is to further shrink this production adapter toward the generic retriever/verifier seams.
 - Production prior-map loading now uses one immutable `LocalizationMap` owner; adapters retain only a const PCL alias and derived crop indices, while per-query crop/registration clouds remain bounded scratch products.
-- Real prior-map Point-LIO runs peak near 203–206 MiB RSS because the prior map, registration temporaries and authoritative KeyFrame clouds coexist; this is measured debt, not attributed to the fixed-size alignment mailbox.
+- The prior-map local-history compaction materially reduces the recorded
+  Point-LIO working set, but default glibc arena retention still leaves the
+  final default-allocator run at 171,696 KiB maximum RSS (about 167.7 MiB).
+  `MALLOC_ARENA_MAX=1` is a deployment-candidate allocator experiment, not an
+  algorithmic fix: it measured 153,068 KiB on the same workload and must be
+  revalidated on the target device before selection. Neither run is evidence
+  for Super-LIO retirement until normal-operation and real-robot gates pass.
 - Failure reporting is mostly `bool`/logging rather than typed `Status`/`Result`.
 - Naming and style debt (`caceData`, `voxel_fliter`, mixed logs) is intentionally deferred behind architecture boundaries.
 
@@ -446,6 +460,8 @@ These remain static audit findings until Phase 0 records measured latency and me
 | Phase 8 offline map-save validation | Passed | `adagraph_dataset_runner --save-map` explicitly invokes `saveSuperMap()`/`savePointMap()` after lifecycle drain. Super-LIO produced final, Snapshot and two FIFO fragment PCDs; Point-LIO produced final and Snapshot PCDs. `inspect_pcd.py` found finite binary payloads and matching declared/actual counts. |
 | Phase 8 clean build/install and tests | Passed | Empty `/tmp/adagraph_clean_build` and `/tmp/adagraph_clean_install` builds configured `basic` and `super_lio` independently. `super_lio` consumed the freshly installed `basic 2.0.0` via `CMAKE_PREFIX_PATH`; the installed set includes `point_lio_node`, `super_lio_node`, and `adagraph_dataset_runner`, with no retired relocation executable. `ctest` passed `basic` 2/2 and `super_lio` 14/14 under `ROS_LOG_DIR=/tmp/adagraph_clean_ros_logs`; `verify_core_boundaries.py` passed for 50 files/13 targets. |
 | Phase 8 snapshot-based backend refinement (latest final) | Passed | `/tmp/adagraph_snapshot_refinement_regression_final/m2dgr_room01_point_lio_5x_snapshot_backend_factor`: standard Point-LIO room_01 at 5x with prior map, `use_localization_factor=true`, `drive_map_to_odom=true`; 2434 poses, path 29.605352 m, APE RMSE 0.389901 m, wall 15.729089 s, peak RSS 225260 KiB. Typed scheduler: 98 nodes/117 constraints, Snapshot v118, 118 optimizer updates/0 failures, 40 global constraints dropped by timestamp policy; 61 relocalization mailbox events yielded 216 completed/published queries and 141 ordered system commits/0 rejects; ROS cache parity `9.1546e-10 m / 1.78001e-10 rad`. `legacy_backend_execution=false`, and the standard log contains no `adagraph_backend.cpp` execution. The manifest gate passed. The earlier 2191-pose run remains under `phase8_20260813_snapshot_backend_factor_point_escalated` for comparison. |
+| Point-LIO normal-operation memory budget | Passed; retirement gate remains open | Final default-allocator `m2dgr_room01_point_lio_5x` run `/tmp/adagraph_memory_normal_final_default_20260813/m2dgr_room01_point_lio_5x`: 2,132 poses, APE RMSE `0.388383 m`, wall `15.307814 s`, maximum RSS `150,952 KiB` and final RSS `150,820 KiB`; all odometry/backend-chain gates passed. This is below the recorded `160 MiB` anti-regression budget but above the `140 MiB` Super-LIO retirement target. The separate `MALLOC_ARENA_MAX=1` run passed with APE `0.387305 m` and `144,196 KiB` maximum RSS, still about `0.8 MiB` above the retirement target. Retain Super-LIO for now rather than reduce SmallIVox capacity without profiling. |
+| Point-LIO prior-map local-history compaction | Passed; retirement gate remains open | Final code run `/tmp/adagraph_memory_prior_history_compact_final_default_20260813/m2dgr_room01_point_lio_5x_snapshot_backend_factor`: 1,995 poses, APE RMSE `0.382443 m`, wall `15.288824 s`, startup `2/1/1`, 177 scheduler completions and all manifest gates passed. The retained eight-frame history was `9,002` points / `288,064 B`, versus the pre-compaction `406,776` points / `13,016,832 B`. Default allocator maximum RSS was `171,696 KiB` (prior registration peak `173,008 KiB`), down from `212,748 KiB`; the new regression gate caps this workload at `180 MiB` / `524,288 B` local history. A separate `MALLOC_ARENA_MAX=1` experiment passed with APE `0.377511 m`, maximum RSS `153,068 KiB` and registration peak `154,404 KiB`; it is not enabled by default and needs target-device validation. |
 
 ## Next Recommended Action
 
@@ -455,10 +471,13 @@ These remain static audit findings until Phase 0 records measured latency and me
 2. Before enabling online occupancy in any deployment, add the lock-hold,
    update-tail-latency, queue-impact, RSS and long-run measurements described
    in Remaining P1 Issues; Snapshot remains the standard default meanwhile.
-3. Drive Point-LIO memory convergence by profiling simultaneous PCL
-   temporary/local-submap/registration ownership and retained KeyFrame/map
-   payloads. Keep Super-LIO only as a regression baseline; do not optimize its
-   fragment buffer or OctVox layout unless the convergence decision changes.
+3. Keep the new prior-map history and RSS gates in the recorded matrix, then
+   profile normal-operation peak RSS and large-map KeyFrame/Submap retention.
+   The default allocator is still above the `160 MiB` prior-map retirement
+   target; validate the allocator candidate on the target device rather than
+   making it an unmeasured application default. Keep Super-LIO only as a
+   regression baseline; do not optimize its fragment buffer or OctVox layout
+   unless the convergence decision changes.
 4. Continue Phase 8 cleanup in this order: explicit instance configuration in
    place of `g_*`; a true lightweight core split from `basic`; explicit
    SmallPointLio construction parameters; then removal of unused external

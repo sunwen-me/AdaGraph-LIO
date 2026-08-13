@@ -14,6 +14,7 @@
 #include "basic/logs.h"
 #include "adagraph/mapping/snapshot_products.h"
 #include "lio/adagraph_feature_extractor.h"
+#include "lio/runtime_memory.h"
 
 namespace LI2Sup {
 
@@ -467,6 +468,15 @@ void LegacyDownstreamPipeline::finish() {
             << alignment_updates_committed_ << "/"
             << (alignment_updates_rejected_ + mailbox_stats.invalid)
             << RESET;
+  // Sample after all frontend, localization and backend workers have drained.
+  // Map IO intentionally remains outside this baseline because its temporary
+  // serialization allocations are not part of the online working set.
+  const auto runtime_memory = CaptureRuntimeMemory();
+  LOG(INFO) << GREEN
+            << " ---> [PipelineRuntimeMemory]: rss/allocated/retained="
+            << runtime_memory.resident_kib << "/"
+            << runtime_memory.glibc_allocated_bytes << "/"
+            << runtime_memory.glibc_retained_bytes << RESET;
 }
 
 void LegacyDownstreamPipeline::reset() {

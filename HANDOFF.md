@@ -917,12 +917,20 @@ Priorities for the next session:
 11. **Mechanical arm work remains.** Navigation is far along, but arm hardware,
     MoveIt calibration, grasping, and task-level behavior are separate unfinished
     workstreams.
-12. **Profile Point-LIO prior-map memory before changing ownership.** Measure
-    `MapManager` KeyFrames, prior-map PCL, local-submap/registration temporary
-    clouds and map-product staging; add a budget/compaction design only after
-    the dominant owners are known. Super-LIO remains a regression baseline
-    until Point-LIO meets the documented RSS, accuracy, recovery and real-robot
-    retirement gates.
+12. **Finish Point-LIO memory convergence before retiring Super-LIO.** The
+    current local-history compaction is validated on `room_01`:
+    retained history fell from `13,016,832 B` to `288,064 B`; default-allocator
+    peak RSS fell from `212,748 KiB` to `171,696 KiB` with APE `0.382443 m`.
+    The manifest now guards this workload at `180 MiB` RSS / `512 KiB` history.
+    `MALLOC_ARENA_MAX=1` measured `153,068 KiB` but is only an allocator
+    candidate pending target-device validation. Normal Point-LIO is currently
+    `150,952 KiB` maximum RSS, under its `160 MiB` anti-regression budget but
+    still above the `140 MiB` retirement target; the normal allocator candidate
+    experiment reaches `144,196 KiB`, still about `0.8 MiB` high. Next profile
+    large-map `MapManager` KeyFrame/Submap retention; do not release KeyFrame
+    clouds without a replacement for Snapshot/map-save/occupancy.
+    Super-LIO remains a regression baseline until Point-LIO meets the
+    documented RSS, accuracy, recovery and real-robot retirement gates.
 13. **Do not enable AdaGraph absolute localization factors on the real robot
     yet.** `lio.backend.use_localization_factor` and
     `lio.backend.drive_map_to_odom` remain experimental and default false.

@@ -934,10 +934,23 @@ void PriorMapLocalization::appendLocalFrame(
     const PointCloudType::ConstPtr& cloud_base,
     const SE3& T_odom_base)
 {
-  local_frames_base_.push_back({cloud_base, T_odom_base});
+  const std::size_t local_frame_count = config_.local_frame_count;
+  const std::size_t per_frame_budget = std::max<std::size_t>(
+      1, (config_.max_local_history_points + local_frame_count - 1) /
+             local_frame_count);
+  // The previous implementation retained full dense Point-LIO frames even
+  // though buildLocalSubmap immediately voxelized and capped them for every
+  // registration. Compact before ownership crosses into the bounded history.
+  CloudPtr compacted = downsampleCloud(
+      cloud_base, static_cast<float>(config_.source_voxel_size_m));
+  compacted = limitCloudSize(
+      std::move(compacted), static_cast<int>(per_frame_budget));
+  if (!compacted || compacted->empty()) {
+    return;
+  }
+  local_frames_base_.push_back({std::move(compacted), T_odom_base});
 
-  const int max_frames = static_cast<int>(config_.local_frame_count);
-  while (local_frames_base_.size() > static_cast<std::size_t>(max_frames)) {
+  while (local_frames_base_.size() > local_frame_count) {
     local_frames_base_.pop_front();
   }
   refreshRetainedMemoryStats();
@@ -973,7 +986,7 @@ CloudPtr PriorMapLocalization::buildLocalSubmap(
   submap = downsampleCloud(
       submap, static_cast<float>(config_.source_voxel_size_m));
   submap = limitCloudSize(
-      submap, static_cast<int>(config_.max_source_points));
+      std::move(submap), static_cast<int>(config_.max_source_points));
   // Reuse the already allocated/filtered buffer. This makes the typed query
   // cloud genuinely base-frame without another large cloud allocation.
   const M3 R_base_odom = T_odom_base.R_.transpose();
@@ -1052,7 +1065,7 @@ CloudPtr PriorMapLocalization::cropPriorMap(const SE3& predicted_map_lidar)
   cropped->height = 1;
   cropped->is_dense = false;
   cropped = limitCloudSize(
-      cropped, static_cast<int>(config_.max_target_points));
+      std::move(cropped), static_cast<int>(config_.max_target_points));
   noteCrop(cropped);
   return cropped;
 }
@@ -1163,10 +1176,14 @@ void PriorMapLocalization::noteTrackingRegistrationRuntimeMemory(
       sample.glibc_retained_bytes);
 }
 
-CloudPtr PriorMapLocalization::downsampleCloud(const CloudPtr& cloud, float leaf_size) const
+CloudPtr PriorMapLocalization::downsampleCloud(
+    const PointCloudType::ConstPtr& cloud, float leaf_size) const
 {
-  if (!cloud || cloud->empty() || leaf_size <= 0.0f) {
-    return cloud;
+  if (!cloud) {
+    return {};
+  }
+  if (cloud->empty() || leaf_size <= 0.0f) {
+    return std::make_shared<PointCloudType>(*cloud);
   }
 
   CloudPtr filtered(new PointCloudType());
@@ -1180,9 +1197,13 @@ CloudPtr PriorMapLocalization::downsampleCloud(const CloudPtr& cloud, float leaf
   return filtered;
 }
 
-CloudPtr PriorMapLocalization::limitCloudSize(const CloudPtr& cloud, int max_points) const
+CloudPtr PriorMapLocalization::limitCloudSize(
+    CloudPtr cloud, int max_points) const
 {
-  if (!cloud || max_points <= 0 ||
+  if (!cloud) {
+    return {};
+  }
+  if (max_points <= 0 ||
       cloud->size() <= static_cast<std::size_t>(max_points)) {
     return cloud;
   }

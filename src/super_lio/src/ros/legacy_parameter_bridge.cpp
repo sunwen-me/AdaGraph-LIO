@@ -114,6 +114,9 @@ LegacyRuntimeConfig ReadLegacyRuntimeConfigFromRos(rclcpp::Node& node) {
       node, "lio.prior_map_localization.crop_grid_cell_size", 10.0);
   localization.max_source_points = ReadPositiveSize(
       node, "lio.prior_map_localization.max_source_points", 20'000);
+  localization.max_local_history_points = ReadPositiveSize(
+      node, "lio.prior_map_localization.max_local_history_points",
+      static_cast<int>(localization.max_source_points));
   localization.max_target_points = ReadPositiveSize(
       node, "lio.prior_map_localization.max_target_points", 100'000);
   localization.max_registration_iterations = ReadPositiveSize(

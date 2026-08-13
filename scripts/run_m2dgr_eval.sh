@@ -37,6 +37,7 @@ PARAMS_FILE="${PARAMS_FILE:-${DEFAULT_PARAMS_FILE}}"
 NODE_EXECUTABLE="${ROOT_DIR}/install/super_lio/lib/super_lio/${NODE_NAME}"
 NODE_LOG="${OUTPUT_DIR}/${FRONTEND}.log"
 PRIOR_MAP_FILE="${PRIOR_MAP_FILE:-}"
+PRIOR_MAP_REGISTRATION_THREADS="${PRIOR_MAP_REGISTRATION_THREADS:-}"
 ENABLE_BACKEND_LOCALIZATION_FACTOR="${ENABLE_BACKEND_LOCALIZATION_FACTOR:-false}"
 OCCUPANCY_ENABLE="${OCCUPANCY_ENABLE:-}"
 OCCUPANCY_SOURCE="${OCCUPANCY_SOURCE:-}"
@@ -83,6 +84,24 @@ if [[ -n "${PRIOR_MAP_FILE}" ]]; then
     --runtime-override "lio.kiss_matcher.enable=true"
     --runtime-override "lio.nav2_tf.enable=true"
     --runtime-override "lio.nav2_tf.publish_map_to_odom=true"
+  )
+fi
+
+if [[ -n "${PRIOR_MAP_REGISTRATION_THREADS}" ]]; then
+  if [[ -z "${PRIOR_MAP_FILE}" ]]; then
+    echo "PRIOR_MAP_REGISTRATION_THREADS requires PRIOR_MAP_FILE" >&2
+    exit 2
+  fi
+  if [[ ! "${PRIOR_MAP_REGISTRATION_THREADS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "PRIOR_MAP_REGISTRATION_THREADS must be a positive integer" >&2
+    exit 2
+  fi
+  ROS_PARAM_ARGS+=(
+    -p "lio.prior_map_localization.num_threads:=${PRIOR_MAP_REGISTRATION_THREADS}"
+  )
+  SUMMARY_OVERRIDE_ARGS+=(
+    --runtime-override
+    "lio.prior_map_localization.num_threads=${PRIOR_MAP_REGISTRATION_THREADS}"
   )
 fi
 

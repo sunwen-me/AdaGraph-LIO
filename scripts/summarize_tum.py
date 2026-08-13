@@ -195,6 +195,19 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
             "frame_vector_backing_bytes": int(match.group(8)),
         }
 
+    pipeline_memory_pattern = re.compile(
+        r"\[PipelineRuntimeMemory\]:\s*"
+        r"rss/allocated/retained=(\d+)/(\d+)/(\d+)"
+    )
+    pipeline_memory_matches = list(pipeline_memory_pattern.finditer(text))
+    if pipeline_memory_matches:
+        match = pipeline_memory_matches[-1]
+        diagnostics["pipeline_runtime_memory"] = {
+            "resident_kib": int(match.group(1)),
+            "glibc_allocated_bytes": int(match.group(2)),
+            "glibc_retained_bytes": int(match.group(3)),
+        }
+
     super_downstream_pattern = re.compile(
         r"Super-LIO downstream enqueued/processed=(\d+)/(\d+),\s*"
         r"max_queue=(\d+),\s*backpressure_waits=(\d+),\s*"
