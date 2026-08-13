@@ -16,6 +16,12 @@ namespace small_point_lio {
 
     class SmallPointLio {
     public:
+        struct MemoryStats {
+            SmallIVox::MemoryStats ivox;
+            Preprocess::MemoryStats preprocess;
+            size_t frame_vector_backing_bytes = 0;
+        };
+
         struct FrontendFrame {
             common::Odometry odometry;
             // Registered, motion-compensated points in the odom frame.
@@ -83,6 +89,8 @@ namespace small_point_lio {
         // Finish the currently accumulated source scan.  This is used during
         // an orderly shutdown so the final scan is not silently discarded.
         void flush_frame();
+
+        [[nodiscard]] MemoryStats memory_stats() const noexcept;
 
     private:
         [[nodiscard]] common::Odometry make_odometry(double timestamp) const;

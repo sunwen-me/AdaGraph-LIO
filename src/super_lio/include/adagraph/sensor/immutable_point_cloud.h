@@ -1,6 +1,7 @@
 #ifndef ADAGRAPH_SENSOR_IMMUTABLE_POINT_CLOUD_H_
 #define ADAGRAPH_SENSOR_IMMUTABLE_POINT_CLOUD_H_
 
+#include <cstddef>
 #include <memory>
 #include <typeinfo>
 #include <utility>
@@ -20,7 +21,8 @@ class ImmutablePointCloud {
   template <typename Storage>
   [[nodiscard]] static ImmutablePointCloud Share(
       std::shared_ptr<const Storage> storage,
-      PointCloudView view) noexcept {
+      PointCloudView view,
+      std::size_t backing_bytes_for_diagnostics = 0) noexcept {
     if (!storage || !view.valid()) {
       return {};
     }
@@ -28,6 +30,10 @@ class ImmutablePointCloud {
     cloud.storage_ = std::move(storage);
     cloud.storage_type_ = &typeid(Storage);
     cloud.view_ = view;
+    cloud.backing_bytes_for_diagnostics_ =
+        backing_bytes_for_diagnostics == 0
+            ? view.size() * view.strideBytes()
+            : backing_bytes_for_diagnostics;
     return cloud;
   }
 
@@ -42,6 +48,11 @@ class ImmutablePointCloud {
   [[nodiscard]] const PointCloudView& view() const noexcept { return view_; }
   [[nodiscard]] long ownerCountForDiagnostics() const noexcept {
     return storage_.use_count();
+  }
+  // Producer-supplied allocation estimate for diagnostics. It is never an
+  // admission or allocation control, and generic owners use the visible span.
+  [[nodiscard]] std::size_t backingBytesForDiagnostics() const noexcept {
+    return backing_bytes_for_diagnostics_;
   }
 
   // Coarse adapter escape hatch for a concrete algorithm that can consume the
@@ -62,6 +73,7 @@ class ImmutablePointCloud {
   std::shared_ptr<const void> storage_;
   const std::type_info* storage_type_ = nullptr;
   PointCloudView view_;
+  std::size_t backing_bytes_for_diagnostics_ = 0;
 };
 
 }  // namespace adagraph::sensor

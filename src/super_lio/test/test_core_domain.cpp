@@ -76,6 +76,20 @@ adagraph::mapping::KeyFrame MakeKeyFrame(
       adagraph::sensor::ImmutablePointCloud::Share(storage, view), {});
 }
 
+adagraph::mapping::KeyFrame MakeKeyFrameWithCloud(
+    std::uint64_t id, std::int64_t timestamp_ns,
+    adagraph::sensor::ImmutablePointCloud cloud,
+    const Eigen::Vector3d& translation = Eigen::Vector3d::Zero()) {
+  return adagraph::mapping::KeyFrame(
+      adagraph::common::KeyFrameId(id),
+      adagraph::common::TrajectoryId(1),
+      adagraph::common::SessionId(1),
+      {Timestamp::FromNanoseconds(timestamp_ns), FrameId::kOdom,
+       FrameId::kBase,
+       {Eigen::Quaterniond::Identity(), translation}},
+      std::move(cloud), {});
+}
+
 adagraph::sensor::ImmutablePointCloud MakeImmutableCloud(FrameId frame) {
   using Buffer = adagraph::sensor::PointCloudBuffer;
   auto storage = std::make_shared<const Buffer>(
@@ -1112,6 +1126,52 @@ TEST(MapManager, PublishesConsistentImmutableSnapshotsToConcurrentReaders) {
   ASSERT_EQ(final_snapshot->keyframes.size(), 50U);
   EXPECT_EQ(final_snapshot->submaps.front().keyframe_ids.size(), 50U);
   EXPECT_TRUE(final_snapshot->consistent());
+}
+
+TEST(MapManager, CountsSharedImmutableKeyframeCloudStorageOnce) {
+  using Buffer = adagraph::sensor::PointCloudBuffer;
+  auto storage = std::make_shared<const Buffer>(Buffer{
+      {1.0F, 2.0F, 3.0F, 1.0F, 0},
+      {4.0F, 5.0F, 6.0F, 1.0F, 0},
+  });
+  const auto view = adagraph::sensor::PointCloudView::InterleavedFloatXyz(
+      storage->data(), storage->size(),
+      sizeof(adagraph::sensor::PointXYZIT),
+      offsetof(adagraph::sensor::PointXYZIT, x),
+      offsetof(adagraph::sensor::PointXYZIT, y),
+      offsetof(adagraph::sensor::PointXYZIT, z), FrameId::kBase);
+  constexpr std::size_t kBackingBytes = 4096;
+  const auto cloud = adagraph::sensor::ImmutablePointCloud::Share(
+      storage, view, kBackingBytes);
+
+  adagraph::mapping::MapManager manager;
+  const auto first = MakeKeyFrameWithCloud(1, 100, cloud);
+  const auto second = MakeKeyFrameWithCloud(2, 200, cloud);
+  adagraph::backend::PoseGraphNode first_node;
+  first_node.id = adagraph::common::NodeId(1);
+  first_node.keyframe_id = first.id();
+  first_node.trajectory_id = first.trajectoryId();
+  first_node.session_id = first.sessionId();
+  first_node.T_odom_base = first.T_odom_base();
+  adagraph::backend::PoseGraphNode second_node;
+  second_node.id = adagraph::common::NodeId(2);
+  second_node.keyframe_id = second.id();
+  second_node.trajectory_id = second.trajectoryId();
+  second_node.session_id = second.sessionId();
+  second_node.T_odom_base = second.T_odom_base();
+
+  ASSERT_TRUE(manager.insertKeyFrame(
+      first, first_node, adagraph::common::SubmapId(0)));
+  ASSERT_TRUE(manager.insertKeyFrame(
+      second, second_node, adagraph::common::SubmapId(0)));
+
+  const auto memory = manager.memoryStats();
+  EXPECT_EQ(memory.keyframe_cloud_count, 2U);
+  EXPECT_EQ(memory.unique_keyframe_cloud_count, 1U);
+  EXPECT_EQ(memory.unique_keyframe_cloud_points, storage->size());
+  EXPECT_EQ(memory.unique_keyframe_cloud_logical_bytes,
+            storage->size() * sizeof(adagraph::sensor::PointXYZIT));
+  EXPECT_EQ(memory.unique_keyframe_cloud_backing_bytes, kBackingBytes);
 }
 
 TEST(MapSnapshotProducts, BuildsVersionedTrajectoryAndMapInGlobalFrame) {

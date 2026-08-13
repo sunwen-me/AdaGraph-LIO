@@ -72,4 +72,13 @@ namespace small_point_lio {
         last_timestamp_imu = imu_msg.timestamp;
     }
 
+    Preprocess::MemoryStats Preprocess::memory_stats() const noexcept {
+        return {
+                point_deque.size() + dense_point_deque.size(),
+                imu_deque.size(),
+                (filtered_points.capacity() + dense_points.capacity() +
+                 processed_pointcloud.capacity()) * sizeof(common::Point),
+        };
+    }
+
 }// namespace small_point_lio

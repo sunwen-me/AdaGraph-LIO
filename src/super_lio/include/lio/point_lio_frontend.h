@@ -57,6 +57,17 @@ public:
     std::uint64_t max_queue_depth = 0;
   };
 
+  struct MemoryStats {
+    std::size_t ivox_entries = 0;
+    std::size_t ivox_buckets = 0;
+    std::size_t ivox_capacity_limit = 0;
+    std::size_t ivox_estimated_bytes = 0;
+    std::size_t preprocess_queued_points = 0;
+    std::size_t preprocess_queued_imus = 0;
+    std::size_t preprocess_vector_backing_bytes = 0;
+    std::size_t frame_vector_backing_bytes = 0;
+  };
+
   using DownstreamFrameCallback =
       std::function<void(LegacyPointFrame&&, const IMUData&)>;
   using OdometryCallback =
@@ -96,6 +107,7 @@ public:
         max_queue_depth_.load(std::memory_order_acquire),
     };
   }
+  [[nodiscard]] MemoryStats memoryStats() const noexcept;
 
   // Configure before init()/sensor processing. The callback is synchronous
   // and must not retain the borrowed cloud view.

@@ -69,6 +69,18 @@ bool MapManager::insertKeyFrame(
   keyframe_index_.emplace(keyframe.id().value(), index);
   node_index_.emplace(node.id.value(), index);
   submaps_[submap->second].keyframe_ids.push_back(keyframe.id());
+  ++memory_stats_.keyframe_cloud_count;
+  const auto& cloud = keyframe.cloudBase();
+  const auto* storage = cloud.view().storageIdentity();
+  if (storage != nullptr &&
+      unique_keyframe_cloud_storage_.insert(storage).second) {
+    ++memory_stats_.unique_keyframe_cloud_count;
+    memory_stats_.unique_keyframe_cloud_points += cloud.size();
+    memory_stats_.unique_keyframe_cloud_logical_bytes +=
+        cloud.size() * cloud.view().strideBytes();
+    memory_stats_.unique_keyframe_cloud_backing_bytes +=
+        cloud.backingBytesForDiagnostics();
+  }
   return true;
 }
 
@@ -146,6 +158,10 @@ std::shared_ptr<const MapSnapshot> MapManager::publishSnapshot() {
 
 std::shared_ptr<const MapSnapshot> MapManager::snapshot() const noexcept {
   return published_snapshot_.load(std::memory_order_acquire);
+}
+
+MapMemoryStats MapManager::memoryStats() const noexcept {
+  return memory_stats_;
 }
 
 std::size_t MapManager::TrajectoryKeyHash::operator()(

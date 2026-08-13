@@ -48,6 +48,15 @@ BASIC::PointCloudType::ConstPtr ToOdomCloud(
   return source_odom;
 }
 
+std::size_t CloudBackingBytes(
+    const BASIC::PointCloudType::ConstPtr& cloud) noexcept {
+  return cloud ? cloud->points.capacity() * sizeof(BASIC::PointType) : 0;
+}
+
+std::size_t CloudBackingBytes(const BASIC::PointCloudType& cloud) noexcept {
+  return cloud.points.capacity() * sizeof(BASIC::PointType);
+}
+
 std::optional<adagraph::geometry::StampedTransform3d> ToMapBase(
     const adagraph::geometry::RigidTransform3d& T_map_odom,
     const adagraph::localization::RelocalizationQuery& query) {
@@ -116,7 +125,20 @@ PclKissCandidateRetriever::Retrieve(
   if (!source_odom) {
     return result;
   }
-  const auto candidates = matcher_.estimateCandidates(source_odom, target);
+  if (memory_callback_) {
+    memory_callback_({PclRelocalizationTemporaryMemory::Stage::kKiss,
+                      CloudBackingBytes(source_odom), 0,
+                      CaptureRuntimeMemory()});
+  }
+  const auto candidates = matcher_.estimateCandidates(
+      source_odom, target,
+      [this, source_bytes = CloudBackingBytes(source_odom)](
+          const RuntimeMemorySample runtime) {
+        if (memory_callback_) {
+          memory_callback_({PclRelocalizationTemporaryMemory::Stage::kKiss,
+                            source_bytes, 0, runtime});
+        }
+      });
   if (candidates.empty()) {
     LOG(WARNING) << "[PclKissCandidateRetriever]: no KISS candidates"
                  << " source_points=" << source_odom->size()
@@ -145,9 +167,11 @@ PclKissCandidateRetriever::Retrieve(
 
 PclRegistrationVerifier::PclRegistrationVerifier(
     adagraph::localization::RelocalizationConfig config,
-    TargetSelector target_selector)
+    TargetSelector target_selector,
+    PclRelocalizationMemoryCallback memory_callback)
     : config_(std::move(config)),
-      target_selector_(std::move(target_selector)) {
+      target_selector_(std::move(target_selector)),
+      memory_callback_(std::move(memory_callback)) {
   if (const auto error = config_.validate()) {
     throw std::invalid_argument("invalid PCL verifier config: " + *error);
   }
@@ -228,6 +252,13 @@ PclRegistrationVerifier::Verify(
   fitness = gicp.getFitnessScore();
   final_transformation = gicp.getFinalTransformation();
 #endif
+
+  if (memory_callback_) {
+    memory_callback_(
+        {PclRelocalizationTemporaryMemory::Stage::kRegistration,
+         CloudBackingBytes(source_odom), CloudBackingBytes(aligned),
+         CaptureRuntimeMemory()});
+  }
 
   if (stop_token.stop_requested() || !converged || !std::isfinite(fitness) ||
       fitness < 0.0) {

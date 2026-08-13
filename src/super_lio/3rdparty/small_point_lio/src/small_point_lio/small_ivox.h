@@ -25,6 +25,14 @@ namespace small_point_lio {
     };
 
     class SmallIVox {
+    public:
+        struct MemoryStats {
+            size_t entry_count = 0;
+            size_t bucket_count = 0;
+            size_t capacity_limit = 0;
+            size_t estimated_bytes = 0;
+        };
+
     private:
         ankerl::unordered_dense::map<uint64_t, std::list<Eigen::Vector3f>::iterator> grids_map;
         float inv_resolution;
@@ -40,6 +48,8 @@ namespace small_point_lio {
         void get_closest_point(const Eigen::Vector3f &pt, std::vector<Eigen::Vector3f> &closest_pt, size_t max_num = 5);
 
         [[nodiscard]] Eigen::Matrix<uint16_t, 3, 1> get_position_index(const Eigen::Vector3f &pt) const;
+
+        [[nodiscard]] MemoryStats memory_stats() const noexcept;
     };
 
     inline __attribute__((always_inline)) uint64_t hash_position_index(const Eigen::Matrix<uint16_t, 3, 1> &v) {
@@ -141,6 +151,24 @@ namespace small_point_lio {
             }
             return true;
         }
+    }
+
+    inline SmallIVox::MemoryStats SmallIVox::memory_stats() const noexcept {
+        // ankerl::unordered_dense does not expose value-container capacity.
+        // Report its current entries plus bucket array as a structural estimate;
+        // RSS remains the source of truth for allocator and list-node overhead.
+        constexpr size_t kListNodePointerBytes = 2 * sizeof(void *);
+        const size_t entries = grids_map.size();
+        const size_t buckets = grids_map.bucket_count();
+        return {
+                entries,
+                buckets,
+                capacity,
+                entries * (sizeof(uint64_t) +
+                           sizeof(std::list<Eigen::Vector3f>::iterator) +
+                           sizeof(Eigen::Vector3f) + kListNodePointerBytes) +
+                    buckets * sizeof(uint32_t),
+        };
     }
 
     [[nodiscard]] inline __attribute__((always_inline)) Eigen::Matrix<uint16_t, 3, 1> SmallIVox::get_position_index(const Eigen::Vector3f &pt) const {

@@ -46,6 +46,7 @@ struct BackendSchedulerStats {
   std::size_t submap_count = 0;
   std::size_t finished_submap_count = 0;
   std::uint64_t snapshot_observer_failures = 0;
+  adagraph::mapping::MapMemoryStats map_memory;
 };
 
 struct KeyFrameSubmission {

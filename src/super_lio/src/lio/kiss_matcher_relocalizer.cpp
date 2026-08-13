@@ -64,7 +64,8 @@ bool KISSMatcherRelocalizer::estimate(
 
 std::vector<KISSMatcherCandidate> KISSMatcherRelocalizer::estimateCandidates(
     const BASIC::PointCloudType::ConstPtr& source,
-    const BASIC::PointCloudType::ConstPtr& target) const {
+    const BASIC::PointCloudType::ConstPtr& target,
+    MemoryCallback memory_callback) const {
   std::vector<KISSMatcherCandidate> candidates;
   if (!config_.enabled) {
     return candidates;
@@ -108,6 +109,10 @@ std::vector<KISSMatcherCandidate> KISSMatcherRelocalizer::estimateCandidates(
       kiss_matcher::KISSMatcher matcher(config);
 
       const auto solution = matcher.estimate(src_vec, tgt_vec);
+      if (memory_callback) {
+        // Capture while matcher/FasterPFH/ROBIN state is still alive.
+        memory_callback(CaptureRuntimeMemory());
+      }
       const auto processed_sizes = matcher.getProcessedInputSizes();
       const auto keypoint_sizes = matcher.getFasterPFHKeypointSizes();
       const auto initial_matches = matcher.getNumInitialMatches();

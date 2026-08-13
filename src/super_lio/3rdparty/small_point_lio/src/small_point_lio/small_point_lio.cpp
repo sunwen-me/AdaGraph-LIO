@@ -295,4 +295,19 @@ namespace small_point_lio {
         }
     }
 
+    SmallPointLio::MemoryStats SmallPointLio::memory_stats() const noexcept {
+        SmallIVox::MemoryStats ivox_stats;
+        if (estimator.ivox) {
+            ivox_stats = estimator.ivox->memory_stats();
+        }
+        return {
+                ivox_stats,
+                preprocess.memory_stats(),
+                (pointcloud_odom_frame.capacity() +
+                 frame_dense_points_odom.capacity() +
+                 matching_points_odom_frame.capacity()) *
+                    sizeof(Eigen::Vector3f),
+        };
+    }
+
 }// namespace small_point_lio

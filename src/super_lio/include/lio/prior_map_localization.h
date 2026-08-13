@@ -2,6 +2,7 @@
 #define PRIOR_MAP_LOCALIZATION_H_
 
 #include <cstdint>
+#include <cstddef>
 #include <deque>
 #include <functional>
 #include <limits>
@@ -22,6 +23,7 @@
 #include "adagraph/localization/relocalization_update.h"
 #include "lio/adagraph_types.h"
 #include "lio/kiss_matcher_relocalizer.h"
+#include "lio/pcl_relocalizer_adapters.h"
 
 namespace LI2Sup {
 
@@ -30,6 +32,30 @@ public:
   using PriorMapCallback = std::function<void(const BASIC::CloudPtr&)>;
   using ResultCallback = std::function<void(
       const adagraph::localization::RelocalizationUpdate&)>;
+
+  struct MemoryStats {
+    std::size_t prior_map_points = 0;
+    std::size_t prior_map_backing_bytes = 0;
+    std::size_t crop_index_cell_count = 0;
+    std::size_t crop_index_point_indices = 0;
+    std::size_t crop_index_index_payload_bytes = 0;
+    std::size_t local_frame_count = 0;
+    std::size_t local_frame_points = 0;
+    std::size_t local_frame_backing_bytes = 0;
+    std::size_t peak_local_submap_points = 0;
+    std::size_t peak_local_submap_backing_bytes = 0;
+    std::size_t peak_crop_points = 0;
+    std::size_t peak_crop_backing_bytes = 0;
+    std::size_t peak_pcl_odom_conversion_backing_bytes = 0;
+    std::size_t peak_pcl_registration_aligned_backing_bytes = 0;
+    std::size_t peak_kiss_resident_kib = 0;
+    std::size_t peak_kiss_glibc_allocated_bytes = 0;
+    std::size_t peak_kiss_glibc_retained_bytes = 0;
+    std::size_t peak_registration_resident_kib = 0;
+    std::size_t peak_registration_glibc_allocated_bytes = 0;
+    std::size_t peak_registration_glibc_retained_bytes = 0;
+    std::size_t peak_explicit_working_set_bytes = 0;
+  };
 
   PriorMapLocalization();
   ~PriorMapLocalization();
@@ -56,6 +82,9 @@ public:
       const noexcept {
     return config_;
   }
+  // Valid after scheduler shutdown, or while the caller otherwise owns the
+  // relocalization worker. Values describe visible container storage only.
+  [[nodiscard]] MemoryStats memoryStats() const noexcept;
 
   void submit(double timestamp,
               const BASIC::CloudPtr& registered_cloud,
@@ -91,6 +120,16 @@ private:
     BASIC::SE3 T_odom_base;
   };
 
+  class QueryScratchGuard {
+   public:
+    explicit QueryScratchGuard(PriorMapLocalization& owner) noexcept
+        : owner_(owner) {}
+    ~QueryScratchGuard();
+
+   private:
+    PriorMapLocalization& owner_;
+  };
+
   std::string resolveMapPath() const;
   bool loadPriorMap();
   void buildPriorMapGrid();
@@ -104,14 +143,14 @@ private:
       const BASIC::PointCloudType::ConstPtr& cloud_base,
       const BASIC::SE3& T_odom_base);
   BASIC::CloudPtr buildLocalSubmap(
-      const BASIC::SE3& T_odom_base) const;
-  BASIC::CloudPtr cropPriorMap(const BASIC::SE3& predicted_map_lidar) const;
+      const BASIC::SE3& T_odom_base);
+  BASIC::CloudPtr cropPriorMap(const BASIC::SE3& predicted_map_lidar);
   BASIC::CloudPtr downsampleCloud(const BASIC::CloudPtr& cloud, float leaf_size) const;
   BASIC::CloudPtr limitCloudSize(const BASIC::CloudPtr& cloud, int max_points) const;
   RegistrationResult runRegistration(const BASIC::CloudPtr& source_base,
                                      const BASIC::CloudPtr& target_map,
                                      const BASIC::SE3& initial_map_odom,
-                                     const BASIC::SE3& T_odom_base) const;
+                                     const BASIC::SE3& T_odom_base);
   bool passQualityGate(const RegistrationResult& result,
                        const BASIC::SE3& odom_lidar,
                        bool force_jump);
@@ -122,6 +161,13 @@ private:
   void enterLost();
   static double rotationAngleDeg(const BASIC::SE3& delta);
   static double clamp01(double value);
+  void refreshRetainedMemoryStats();
+  void noteLocalSubmap(const BASIC::CloudPtr& cloud);
+  void noteCrop(const BASIC::CloudPtr& cloud);
+  void notePclTemporaryMemory(
+      const PclRelocalizationTemporaryMemory& sample);
+  void noteTrackingRegistrationRuntimeMemory(
+      RuntimeMemorySample sample);
 
   bool enabled_ = false;
   std::size_t submitted_frames_ = 0;
@@ -135,6 +181,9 @@ private:
       global_relocalizer_;
   std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> prior_map_grid_;
   std::deque<LocalFrameBase> local_frames_base_;
+  MemoryStats memory_stats_;
+  std::size_t active_local_submap_backing_bytes_ = 0;
+  std::size_t active_crop_backing_bytes_ = 0;
   State state_ = State::UNINITIALIZED;
   bool startup_kiss_attempted_ = false;
   double last_startup_kiss_time_ = 0.0;

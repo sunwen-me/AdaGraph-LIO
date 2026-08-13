@@ -14,6 +14,12 @@ namespace small_point_lio {
 
     class Preprocess {
     public:
+        struct MemoryStats {
+            size_t queued_point_count = 0;
+            size_t queued_imu_count = 0;
+            size_t vector_backing_bytes = 0;
+        };
+
         Parameters *parameters = nullptr;
         std::deque<common::Point> point_deque;
         std::deque<common::Point> dense_point_deque;
@@ -34,6 +40,8 @@ namespace small_point_lio {
         void reset();
         void on_point_cloud_callback(const std::vector<common::Point> &pointcloud);
         void on_imu_callback(const common::ImuMsg &imu_msg);
+
+        [[nodiscard]] MemoryStats memory_stats() const noexcept;
     };
 
 }// namespace small_point_lio

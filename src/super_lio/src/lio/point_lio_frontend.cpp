@@ -69,6 +69,23 @@ public:
   std::unique_ptr<small_point_lio::SmallPointLio> point_lio;
 };
 
+PointLIOFrontend::MemoryStats PointLIOFrontend::memoryStats() const noexcept {
+  if (!impl_ || !impl_->point_lio) {
+    return {};
+  }
+  const auto memory = impl_->point_lio->memory_stats();
+  return {
+      memory.ivox.entry_count,
+      memory.ivox.bucket_count,
+      memory.ivox.capacity_limit,
+      memory.ivox.estimated_bytes,
+      memory.preprocess.queued_point_count,
+      memory.preprocess.queued_imu_count,
+      memory.preprocess.vector_backing_bytes,
+      memory.frame_vector_backing_bytes,
+  };
+}
+
 class PointLIOFrontend::VendorFrame {
 public:
   explicit VendorFrame(small_point_lio::SmallPointLio::FrontendFrame&& value)
@@ -455,6 +472,16 @@ void PointLIOFrontend::finish() {
     impl_->point_lio->flush_frame();
   }
   stopFrameWorker();
+  const auto memory = memoryStats();
+  std::clog << "[PointLIOMemory]: ivox(entries/buckets/capacity/estimated)="
+            << memory.ivox_entries << "/" << memory.ivox_buckets << "/"
+            << memory.ivox_capacity_limit << "/" << memory.ivox_estimated_bytes
+            << ", preprocess(queued_points/queued_imus/vectors)="
+            << memory.preprocess_queued_points << "/"
+            << memory.preprocess_queued_imus << "/"
+            << memory.preprocess_vector_backing_bytes
+            << ", frame_vectors=" << memory.frame_vector_backing_bytes
+            << " bytes\n";
   finished_ = true;
 }
 

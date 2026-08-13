@@ -1,6 +1,7 @@
 #ifndef LI2SUP_PCL_RELOCALIZER_ADAPTERS_H_
 #define LI2SUP_PCL_RELOCALIZER_ADAPTERS_H_
 
+#include <cstddef>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -16,6 +17,24 @@
 
 namespace LI2Sup {
 
+// Explicit PCL clouds owned by the adapters while a query is running. This
+// excludes allocation internal to PCL/FastVGICP; RSS remains the authority for
+// total process memory.
+struct PclRelocalizationTemporaryMemory {
+  enum class Stage {
+    kKiss,
+    kRegistration,
+  };
+
+  Stage stage = Stage::kRegistration;
+  std::size_t source_odom_backing_bytes = 0;
+  std::size_t registration_aligned_backing_bytes = 0;
+  RuntimeMemorySample runtime;
+};
+
+using PclRelocalizationMemoryCallback = std::function<void(
+    const PclRelocalizationTemporaryMemory&)>;
+
 // Transitional concrete adapters around the existing, validated PCL/KISS
 // implementation. They recover immutable PCL owners from the core cloud
 // handles and perform no architecture-induced point-cloud copy.
@@ -24,8 +43,10 @@ class PclKissCandidateRetriever final
  public:
   PclKissCandidateRetriever() = default;
   explicit PclKissCandidateRetriever(
-      KISSMatcherRelocalizer::Config config)
-      : matcher_(std::move(config)) {}
+      KISSMatcherRelocalizer::Config config,
+      PclRelocalizationMemoryCallback memory_callback = {})
+      : matcher_(std::move(config)),
+        memory_callback_(std::move(memory_callback)) {}
 
   [[nodiscard]] std::vector<adagraph::localization::RelocalizationCandidate>
   Retrieve(const adagraph::localization::RelocalizationQuery& query,
@@ -34,6 +55,7 @@ class PclKissCandidateRetriever final
 
  private:
   KISSMatcherRelocalizer matcher_;
+  PclRelocalizationMemoryCallback memory_callback_;
 };
 
 class PclRegistrationVerifier final
@@ -44,7 +66,8 @@ class PclRegistrationVerifier final
 
   PclRegistrationVerifier(
       adagraph::localization::RelocalizationConfig config,
-      TargetSelector target_selector);
+      TargetSelector target_selector,
+      PclRelocalizationMemoryCallback memory_callback = {});
 
   [[nodiscard]] std::optional<
       adagraph::localization::RegistrationVerification>
@@ -56,6 +79,7 @@ class PclRegistrationVerifier final
  private:
   adagraph::localization::RelocalizationConfig config_;
   TargetSelector target_selector_;
+  PclRelocalizationMemoryCallback memory_callback_;
 };
 
 }  // namespace LI2Sup

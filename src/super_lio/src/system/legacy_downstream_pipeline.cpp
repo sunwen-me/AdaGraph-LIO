@@ -432,6 +432,11 @@ void LegacyDownstreamPipeline::finish() {
               << ", accepted_keyframes=" << accepted_keyframe_count_
               << ", snapshot_observer_failures="
               << stats.snapshot_observer_failures
+              << ", keyframe_clouds(unique/points/logical/backing)="
+              << stats.map_memory.unique_keyframe_cloud_count << "/"
+              << stats.map_memory.unique_keyframe_cloud_points << "/"
+              << stats.map_memory.unique_keyframe_cloud_logical_bytes << "/"
+              << stats.map_memory.unique_keyframe_cloud_backing_bytes
               << RESET;
   }
   if (global_alignment_state_) {
@@ -604,7 +609,8 @@ bool LegacyDownstreamPipeline::submitGraphKeyFrame(
       x_offset, y_offset, z_offset,
       adagraph::geometry::FrameId::kBase);
   auto immutable_cloud = adagraph::sensor::ImmutablePointCloud::Share(
-      frozen_cloud, view);
+      frozen_cloud, view,
+      cloud_base->points.capacity() * sizeof(PointType));
   adagraph::mapping::KeyFrameQuality quality;
   quality.input_point_count = input_point_count;
   quality.matching_point_count = cloud_base->size();

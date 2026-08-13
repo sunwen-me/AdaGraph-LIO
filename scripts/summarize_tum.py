@@ -174,6 +174,27 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
             "downstream_mean_ms": float(match.group(7)),
         }
 
+    point_memory_pattern = re.compile(
+        r"\[PointLIOMemory\]:\s*"
+        r"ivox\(entries/buckets/capacity/estimated\)="
+        r"(\d+)/(\d+)/(\d+)/(\d+),\s*"
+        r"preprocess\(queued_points/queued_imus/vectors\)="
+        r"(\d+)/(\d+)/(\d+),\s*frame_vectors=(\d+)\s*bytes"
+    )
+    point_memory_matches = list(point_memory_pattern.finditer(text))
+    if point_memory_matches:
+        match = point_memory_matches[-1]
+        diagnostics["point_lio_memory"] = {
+            "ivox_entries": int(match.group(1)),
+            "ivox_buckets": int(match.group(2)),
+            "ivox_capacity_limit": int(match.group(3)),
+            "ivox_estimated_bytes": int(match.group(4)),
+            "preprocess_queued_points": int(match.group(5)),
+            "preprocess_queued_imus": int(match.group(6)),
+            "preprocess_vector_backing_bytes": int(match.group(7)),
+            "frame_vector_backing_bytes": int(match.group(8)),
+        }
+
     super_downstream_pattern = re.compile(
         r"Super-LIO downstream enqueued/processed=(\d+)/(\d+),\s*"
         r"max_queue=(\d+),\s*backpressure_waits=(\d+),\s*"
@@ -223,6 +244,21 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
             "finished_submap_count": int(match.group(15)),
             "accepted_keyframes": int(match.group(16)),
             "snapshot_observer_failures": int(match.group(17)),
+        }
+
+    backend_memory_pattern = re.compile(
+        r"\[BackendScheduler\]:[^\n]*"
+        r"keyframe_clouds\(unique/points/logical/backing\)="
+        r"(\d+)/(\d+)/(\d+)/(\d+)"
+    )
+    backend_memory_matches = list(backend_memory_pattern.finditer(text))
+    if backend_memory_matches:
+        match = backend_memory_matches[-1]
+        diagnostics["map_keyframe_memory"] = {
+            "unique_cloud_count": int(match.group(1)),
+            "unique_cloud_points": int(match.group(2)),
+            "unique_cloud_logical_bytes": int(match.group(3)),
+            "unique_cloud_backing_bytes": int(match.group(4)),
         }
 
     global_alignment_pattern = re.compile(
@@ -308,6 +344,45 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
             "lost_recovery_successes": int(match.group(5)),
             "lost_recovery_failures": int(match.group(6)),
             "first_success_delay_s": float(match.group(7)),
+        }
+
+    prior_map_memory_pattern = re.compile(
+        r"\[PriorMapLocalizationMemory\]:\s*"
+        r"prior\(points/backing\)=(\d+)/(\d+),\s*"
+        r"crop_index\(cells/indices/payload\)=(\d+)/(\d+)/(\d+),\s*"
+        r"local_frames\(count/points/backing\)=(\d+)/(\d+)/(\d+),\s*"
+        r"peak_local_submap\(points/backing\)=(\d+)/(\d+),\s*"
+        r"peak_crop\(points/backing\)=(\d+)/(\d+),\s*"
+        r"peak_pcl\(source_odom/aligned\)=(\d+)/(\d+),\s*"
+        r"peak_runtime\(kiss_rss/allocated/retained\)=(\d+)/(\d+)/(\d+),\s*"
+        r"registration_rss/allocated/retained=(\d+)/(\d+)/(\d+),\s*"
+        r"peak_explicit_working_set=(\d+)\s*bytes"
+    )
+    prior_map_memory_matches = list(prior_map_memory_pattern.finditer(text))
+    if prior_map_memory_matches:
+        match = prior_map_memory_matches[-1]
+        diagnostics["prior_map_memory"] = {
+            "prior_map_points": int(match.group(1)),
+            "prior_map_backing_bytes": int(match.group(2)),
+            "crop_index_cells": int(match.group(3)),
+            "crop_index_point_indices": int(match.group(4)),
+            "crop_index_index_payload_bytes": int(match.group(5)),
+            "local_frame_count": int(match.group(6)),
+            "local_frame_points": int(match.group(7)),
+            "local_frame_backing_bytes": int(match.group(8)),
+            "peak_local_submap_points": int(match.group(9)),
+            "peak_local_submap_backing_bytes": int(match.group(10)),
+            "peak_crop_points": int(match.group(11)),
+            "peak_crop_backing_bytes": int(match.group(12)),
+            "peak_pcl_odom_conversion_backing_bytes": int(match.group(13)),
+            "peak_pcl_registration_aligned_backing_bytes": int(match.group(14)),
+            "peak_kiss_resident_kib": int(match.group(15)),
+            "peak_kiss_glibc_allocated_bytes": int(match.group(16)),
+            "peak_kiss_glibc_retained_bytes": int(match.group(17)),
+            "peak_registration_resident_kib": int(match.group(18)),
+            "peak_registration_glibc_allocated_bytes": int(match.group(19)),
+            "peak_registration_glibc_retained_bytes": int(match.group(20)),
+            "peak_explicit_working_set_bytes": int(match.group(21)),
         }
 
     occupancy_rebuild_pattern = re.compile(

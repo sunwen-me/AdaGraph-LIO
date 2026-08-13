@@ -184,6 +184,7 @@ void BackendScheduler::workerLoop() {
             return submap.state == adagraph::mapping::SubmapState::kFinished;
           }));
       stats_.snapshot_observer_failures = snapshot_observer_failures_;
+      stats_.map_memory = map_manager_.memoryStats();
     }
   }
 }

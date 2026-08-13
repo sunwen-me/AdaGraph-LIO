@@ -121,6 +121,7 @@ set(ADAGRAPH_LEGACY_ALGORITHM_SRC
   src/lio/kiss_matcher_relocalizer.cpp
   src/lio/pcl_relocalizer_adapters.cpp
   src/lio/prior_map_localization.cpp
+  src/lio/runtime_memory.cpp
 )
 set(ADAGRAPH_LEGACY_COMPAT_SRC
   src/lio/legacy_algorithm_config_adapter.cpp
@@ -810,6 +811,11 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(
+    NAME test_summarize_tum_diagnostics
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_summarize_tum.py
+  )
   add_test(
     NAME test_core_boundary_dependencies
     COMMAND ${Python3_EXECUTABLE}

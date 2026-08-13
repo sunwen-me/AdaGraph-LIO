@@ -10,6 +10,7 @@
 #include <limits>
 #include <stdexcept>
 #include <utility>
+#include <unordered_set>
 
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
@@ -118,12 +119,18 @@ adagraph::sensor::ImmutablePointCloud SharePclCloud(
           reinterpret_cast<const std::byte*>(&first.z) - origin),
       frame);
   return adagraph::sensor::ImmutablePointCloud::Share(
-      std::move(frozen), view);
+      std::move(frozen), view,
+      cloud->points.capacity() * sizeof(PointType));
 }
 
 }  // namespace
 
 PriorMapLocalization::PriorMapLocalization() = default;
+
+PriorMapLocalization::QueryScratchGuard::~QueryScratchGuard() {
+  owner_.active_local_submap_backing_bytes_ = 0;
+  owner_.active_crop_backing_bytes_ = 0;
+}
 
 PriorMapLocalization::~PriorMapLocalization()
 {
@@ -270,7 +277,46 @@ void PriorMapLocalization::shutdown()
                       ? *first_success_relocalization_delay_sec_
                       : -1.0)
               << RESET;
+    refreshRetainedMemoryStats();
+    const auto memory = memoryStats();
+    LOG(INFO) << GREEN
+              << " ---> [PriorMapLocalizationMemory]: prior(points/backing)="
+              << memory.prior_map_points << "/"
+              << memory.prior_map_backing_bytes
+              << ", crop_index(cells/indices/payload)="
+              << memory.crop_index_cell_count << "/"
+              << memory.crop_index_point_indices << "/"
+              << memory.crop_index_index_payload_bytes
+              << ", local_frames(count/points/backing)="
+              << memory.local_frame_count << "/"
+              << memory.local_frame_points << "/"
+              << memory.local_frame_backing_bytes
+              << ", peak_local_submap(points/backing)="
+              << memory.peak_local_submap_points << "/"
+              << memory.peak_local_submap_backing_bytes
+              << ", peak_crop(points/backing)="
+              << memory.peak_crop_points << "/"
+              << memory.peak_crop_backing_bytes
+              << ", peak_pcl(source_odom/aligned)="
+              << memory.peak_pcl_odom_conversion_backing_bytes << "/"
+              << memory.peak_pcl_registration_aligned_backing_bytes
+              << ", peak_runtime(kiss_rss/allocated/retained)="
+              << memory.peak_kiss_resident_kib << "/"
+              << memory.peak_kiss_glibc_allocated_bytes << "/"
+              << memory.peak_kiss_glibc_retained_bytes
+              << ", registration_rss/allocated/retained="
+              << memory.peak_registration_resident_kib << "/"
+              << memory.peak_registration_glibc_allocated_bytes << "/"
+              << memory.peak_registration_glibc_retained_bytes
+              << ", peak_explicit_working_set="
+              << memory.peak_explicit_working_set_bytes << " bytes"
+              << RESET;
   }
+}
+
+PriorMapLocalization::MemoryStats PriorMapLocalization::memoryStats() const
+    noexcept {
+  return memory_stats_;
 }
 
 void PriorMapLocalization::submit(double timestamp,
@@ -478,12 +524,17 @@ bool PriorMapLocalization::loadPriorMap()
   buildPriorMapGrid();
   global_relocalizer_ =
       std::make_unique<adagraph::localization::ComposedRelocalizer>(
-          std::make_unique<PclKissCandidateRetriever>(kiss_config_),
+          std::make_unique<PclKissCandidateRetriever>(
+              kiss_config_, [this](const PclRelocalizationTemporaryMemory& sample) {
+                notePclTemporaryMemory(sample);
+              }),
           std::make_unique<PclRegistrationVerifier>(
               config_,
               [this](const SE3& initial_T_map_base) {
                 return BASIC::PointCloudType::ConstPtr(
                     cropPriorMap(initial_T_map_base));
+              }, [this](const PclRelocalizationTemporaryMemory& sample) {
+                notePclTemporaryMemory(sample);
               }));
   if (prior_map_callback_) {
     // Publish/reset consumers from the original map before releasing it.
@@ -540,6 +591,7 @@ void PriorMapLocalization::buildPriorMapGrid()
     }
     prior_map_grid_[voxelKey(*cx, *cy, *cz)].push_back(i);
   }
+  refreshRetainedMemoryStats();
 }
 
 adagraph::localization::RelocalizationResult
@@ -549,6 +601,7 @@ PriorMapLocalization::processQuery(
     std::stop_token stop_token)
 {
   adagraph::localization::RelocalizationResult output;
+  QueryScratchGuard scratch_guard(*this);
   if (!query.valid() || !map.valid() || stop_token.stop_requested()) {
     output.status = stop_token.stop_requested()
         ? adagraph::localization::RelocalizationStatus::kCancelled
@@ -887,10 +940,11 @@ void PriorMapLocalization::appendLocalFrame(
   while (local_frames_base_.size() > static_cast<std::size_t>(max_frames)) {
     local_frames_base_.pop_front();
   }
+  refreshRetainedMemoryStats();
 }
 
 CloudPtr PriorMapLocalization::buildLocalSubmap(
-    const SE3& T_odom_base) const
+    const SE3& T_odom_base)
 {
   CloudPtr submap(new PointCloudType());
   std::size_t total_points = 0;
@@ -931,10 +985,11 @@ CloudPtr PriorMapLocalization::buildLocalSubmap(
     point.y = static_cast<float>(point_base.y());
     point.z = static_cast<float>(point_base.z());
   }
+  noteLocalSubmap(submap);
   return submap;
 }
 
-CloudPtr PriorMapLocalization::cropPriorMap(const SE3& predicted_map_lidar) const
+CloudPtr PriorMapLocalization::cropPriorMap(const SE3& predicted_map_lidar)
 {
   CloudPtr cropped(new PointCloudType());
   const auto map = localizationMapCloud();
@@ -996,8 +1051,116 @@ CloudPtr PriorMapLocalization::cropPriorMap(const SE3& predicted_map_lidar) cons
   cropped->width = cropped->size();
   cropped->height = 1;
   cropped->is_dense = false;
-  return limitCloudSize(
+  cropped = limitCloudSize(
       cropped, static_cast<int>(config_.max_target_points));
+  noteCrop(cropped);
+  return cropped;
+}
+
+void PriorMapLocalization::refreshRetainedMemoryStats() {
+  const auto map = localizationMapCloud();
+  memory_stats_.prior_map_points = map ? map->size() : 0;
+  memory_stats_.prior_map_backing_bytes =
+      map ? map->points.capacity() * sizeof(PointType) : 0;
+  memory_stats_.crop_index_cell_count = prior_map_grid_.size();
+  memory_stats_.crop_index_point_indices = 0;
+  for (const auto& [unused_key, indices] : prior_map_grid_) {
+    (void)unused_key;
+    memory_stats_.crop_index_point_indices += indices.size();
+  }
+  memory_stats_.crop_index_index_payload_bytes =
+      memory_stats_.crop_index_point_indices * sizeof(std::uint32_t);
+  memory_stats_.local_frame_count = local_frames_base_.size();
+  memory_stats_.local_frame_points = 0;
+  memory_stats_.local_frame_backing_bytes = 0;
+  std::unordered_set<const void*> unique_local_frames;
+  for (const auto& frame : local_frames_base_) {
+    if (!frame.cloud_base) {
+      continue;
+    }
+    memory_stats_.local_frame_points += frame.cloud_base->size();
+    const auto* storage = frame.cloud_base->points.data();
+    if (storage != nullptr && unique_local_frames.insert(storage).second) {
+      memory_stats_.local_frame_backing_bytes +=
+          frame.cloud_base->points.capacity() * sizeof(PointType);
+    }
+  }
+}
+
+void PriorMapLocalization::noteLocalSubmap(const CloudPtr& cloud) {
+  const std::size_t points = cloud ? cloud->size() : 0;
+  const std::size_t backing =
+      cloud ? cloud->points.capacity() * sizeof(PointType) : 0;
+  active_local_submap_backing_bytes_ = backing;
+  memory_stats_.peak_local_submap_points = std::max(
+      memory_stats_.peak_local_submap_points, points);
+  memory_stats_.peak_local_submap_backing_bytes = std::max(
+      memory_stats_.peak_local_submap_backing_bytes, backing);
+  memory_stats_.peak_explicit_working_set_bytes = std::max(
+      memory_stats_.peak_explicit_working_set_bytes,
+      memory_stats_.prior_map_backing_bytes +
+          memory_stats_.crop_index_index_payload_bytes +
+          memory_stats_.local_frame_backing_bytes +
+          active_local_submap_backing_bytes_ + active_crop_backing_bytes_);
+}
+
+void PriorMapLocalization::noteCrop(const CloudPtr& cloud) {
+  const std::size_t points = cloud ? cloud->size() : 0;
+  const std::size_t backing =
+      cloud ? cloud->points.capacity() * sizeof(PointType) : 0;
+  active_crop_backing_bytes_ = backing;
+  memory_stats_.peak_crop_points = std::max(memory_stats_.peak_crop_points,
+                                             points);
+  memory_stats_.peak_crop_backing_bytes = std::max(
+      memory_stats_.peak_crop_backing_bytes, backing);
+  memory_stats_.peak_explicit_working_set_bytes = std::max(
+      memory_stats_.peak_explicit_working_set_bytes,
+      memory_stats_.prior_map_backing_bytes +
+          memory_stats_.crop_index_index_payload_bytes +
+          memory_stats_.local_frame_backing_bytes +
+          active_local_submap_backing_bytes_ + active_crop_backing_bytes_);
+}
+
+void PriorMapLocalization::notePclTemporaryMemory(
+    const PclRelocalizationTemporaryMemory& sample) {
+  memory_stats_.peak_pcl_odom_conversion_backing_bytes = std::max(
+      memory_stats_.peak_pcl_odom_conversion_backing_bytes,
+      sample.source_odom_backing_bytes);
+  memory_stats_.peak_pcl_registration_aligned_backing_bytes = std::max(
+      memory_stats_.peak_pcl_registration_aligned_backing_bytes,
+      sample.registration_aligned_backing_bytes);
+  if (sample.stage == PclRelocalizationTemporaryMemory::Stage::kKiss) {
+    memory_stats_.peak_kiss_resident_kib = std::max(
+        memory_stats_.peak_kiss_resident_kib, sample.runtime.resident_kib);
+    memory_stats_.peak_kiss_glibc_allocated_bytes = std::max(
+        memory_stats_.peak_kiss_glibc_allocated_bytes,
+        sample.runtime.glibc_allocated_bytes);
+    memory_stats_.peak_kiss_glibc_retained_bytes = std::max(
+        memory_stats_.peak_kiss_glibc_retained_bytes,
+        sample.runtime.glibc_retained_bytes);
+  } else {
+    noteTrackingRegistrationRuntimeMemory(sample.runtime);
+  }
+  memory_stats_.peak_explicit_working_set_bytes = std::max(
+      memory_stats_.peak_explicit_working_set_bytes,
+      memory_stats_.prior_map_backing_bytes +
+          memory_stats_.crop_index_index_payload_bytes +
+          memory_stats_.local_frame_backing_bytes +
+          active_local_submap_backing_bytes_ + active_crop_backing_bytes_ +
+          sample.source_odom_backing_bytes +
+          sample.registration_aligned_backing_bytes);
+}
+
+void PriorMapLocalization::noteTrackingRegistrationRuntimeMemory(
+    const RuntimeMemorySample sample) {
+  memory_stats_.peak_registration_resident_kib = std::max(
+      memory_stats_.peak_registration_resident_kib, sample.resident_kib);
+  memory_stats_.peak_registration_glibc_allocated_bytes = std::max(
+      memory_stats_.peak_registration_glibc_allocated_bytes,
+      sample.glibc_allocated_bytes);
+  memory_stats_.peak_registration_glibc_retained_bytes = std::max(
+      memory_stats_.peak_registration_glibc_retained_bytes,
+      sample.glibc_retained_bytes);
 }
 
 CloudPtr PriorMapLocalization::downsampleCloud(const CloudPtr& cloud, float leaf_size) const
@@ -1043,7 +1206,7 @@ PriorMapLocalization::RegistrationResult PriorMapLocalization::runRegistration(
     const CloudPtr& source_base,
     const CloudPtr& target_map,
     const SE3& initial_map_odom,
-    const SE3& T_odom_base) const
+    const SE3& T_odom_base)
 {
   RegistrationResult result;
   if (!source_base || source_base->empty() || !target_map ||
@@ -1088,6 +1251,11 @@ PriorMapLocalization::RegistrationResult PriorMapLocalization::runRegistration(
   result.fitness = gicp.getFitnessScore();
   final_transformation = gicp.getFinalTransformation();
 #endif
+
+  notePclTemporaryMemory(
+      {PclRelocalizationTemporaryMemory::Stage::kRegistration,
+       0, aligned.points.capacity() * sizeof(PointType),
+       CaptureRuntimeMemory()});
 
   if (!result.converged) {
     return result;

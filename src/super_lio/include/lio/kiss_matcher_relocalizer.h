@@ -2,11 +2,13 @@
 #define LI2SUP_KISS_MATCHER_RELOCALIZER_H_
 
 #include <cstddef>
+#include <functional>
 #include <utility>
 #include <vector>
 
 #include "basic/alias.h"
 #include "basic/Manifold.h"
+#include "lio/runtime_memory.h"
 
 namespace LI2Sup {
 
@@ -19,6 +21,8 @@ struct KISSMatcherCandidate {
 
 class KISSMatcherRelocalizer {
 public:
+  using MemoryCallback = std::function<void(RuntimeMemorySample)>;
+
   struct Config {
     bool enabled = false;
     float voxel_size = 0.5F;
@@ -48,7 +52,8 @@ public:
 
   std::vector<KISSMatcherCandidate> estimateCandidates(
       const BASIC::PointCloudType::ConstPtr& source,
-      const BASIC::PointCloudType::ConstPtr& target) const;
+      const BASIC::PointCloudType::ConstPtr& target,
+      MemoryCallback memory_callback = {}) const;
 
   [[nodiscard]] const Config& config() const noexcept { return config_; }
 
