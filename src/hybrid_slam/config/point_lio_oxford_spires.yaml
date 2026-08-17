@@ -1,0 +1,93 @@
+/**:
+  ros__parameters:
+    # Oxford Spires: Hesai QT64 + Alphasense Frontier.
+    lidar_topic: "/hesai/pandar"
+    imu_topic: "/alphasense_driver_ros/imu"
+    lidar_type: "hesai16"
+    lidar_frame: "hesai"
+    save_pcd: false
+
+    point_lio.input.reliable: true
+    point_lio.input.lidar_queue_depth: 128
+    point_lio.input.imu_queue_depth: 4000
+    point_lio.backend.queue_capacity: 16
+
+    point_filter_num: 1
+    min_distance: 4.0
+    max_distance: 60.0
+    space_downsample: true
+    space_downsample_leaf_size: 0.20
+
+    gravity: [0.0, 0.0, -9.805]
+    fix_gravity_direction: true
+    check_satu: true
+    satu_acc: 30.0
+    satu_gyro: 35.0
+    acc_norm: 9.805
+
+    map_resolution: 0.20
+    init_map_size: 100
+
+    extrinsic_est_en: false
+    # Official Oxford Spires Hesai/IMU calibration used by FAST-LIO.
+    extrinsic_T: [-0.00459163, -0.00200303, -0.0547992]
+    extrinsic_R: [-0.0106465, -0.999911, 0.00806769,
+                  0.999941, -0.0106296, 0.00171369,
+                  -0.00166849, 0.00808546, 0.999966]
+
+    laser_point_cov: 0.01
+    imu_meas_acc_cov: 0.01
+    imu_meas_omg_cov: 0.01
+    velocity_cov: 20.0
+    acceleration_cov: 500.0
+    omg_cov: 1000.0
+    ba_cov: 0.0001
+    bg_cov: 0.0001
+    plane_threshold: 0.1
+    match_sqaured: 81.0
+    publish_odometry_without_downsample: true
+
+    lio.map.save_map: false
+    lio.map.save_map_dir: "map"
+    lio.map.map_name: "map.pcd"
+    lio.map.ds_size: 0.20
+    lio.extrinsic.odom_robo: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    lio.output.robot: false
+    lio.output.map: false
+    lio.output.pub_step: 1
+    lio.output.global_map.enable: true
+    lio.output.global_map_voxel_size_m: 0.20
+    lio.output.global_map_pub_period: 10.0
+    lio.output.path_max_poses: 20000
+    lio.output.odometry_rate_hz: 100.0
+    lio.frontend_health.enable: false
+    lio.submap_recovery.enable: false
+    lio.loop_closure.enable: false
+    lio.loop_closure.plugin: bevplace2
+    lio.loop_closure.bevplace2.socket_path: "/tmp/adagraph_bevplace2.sock"
+    lio.loop_closure.bevplace2.request_timeout_ms: 2000
+    lio.loop_closure.bevplace2.minimum_pose_inliers: 16
+    lio.loop_closure.bevplace2.maximum_pose_residual_m: 1.0
+    lio.loop_closure.bevplace2.maximum_registration_initial_translation_m: 100.0
+    lio.loop_closure.scan_context.ring_count: 20
+    lio.loop_closure.scan_context.sector_count: 60
+    lio.loop_closure.scan_context.ring_key_candidates: 10
+    lio.loop_closure.scan_context.max_radius_m: 80.0
+    lio.loop_closure.scan_context.maximum_registration_initial_translation_m: 100.0
+    lio.loop_closure.maximum_candidates: 10
+    lio.loop_closure.max_source_points: 8000
+    lio.loop_closure.max_target_points: 20000
+    lio.loop_closure.max_registration_iterations: 32
+    lio.loop_closure.max_fitness: 4.0
+    lio.loop_closure.neighbor_submaps: 1
+    lio.loop_closure.maximum_initial_translation_m: 15.0
+    lio.loop_closure.translation_sigma_m: 0.35
+    lio.loop_closure.rotation_sigma_rad: 0.10
+    # A verified loop updates map->odom only; Point-LIO remains the continuous
+    # odom->base estimator. Enable nav2_tf.publish_map_to_odom to publish it.
+    lio.backend.drive_map_to_odom: true
+    lio.prior_map_localization.enable: false
+    lio.backend.use_localization_factor: false
+    lio.nav2_tf.enable: false
+    lio.kiss_matcher.enable: false
+    lio.occupancy_grid.enable: false

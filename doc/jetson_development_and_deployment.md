@@ -1,4 +1,4 @@
-# AdaGraph-LIO Jetson 开发与部署
+# HybridSLAM Jetson 开发与部署
 
 ## 1. 基本原则
 
@@ -13,7 +13,7 @@
 当前仓库需要先在 GitHub、GitLab、Gitee 或局域网 Git 服务中创建一个私有空仓库，然后在开发电脑执行：
 
 ```bash
-cd /home/sw/AdaGraph-LIO
+cd /home/sw/HybridSLAM
 git remote add origin <REMOTE_URL>
 git push -u origin main
 git push origin develop
@@ -61,8 +61,8 @@ git switch develop
 Jetson 上只克隆源码：
 
 ```bash
-git clone <REMOTE_URL> ~/AdaGraph-LIO
-cd ~/AdaGraph-LIO
+git clone <REMOTE_URL> ~/HybridSLAM
+cd ~/HybridSLAM
 git checkout jetson-v0.1.0
 
 source /opt/ros/<ROS_DISTRO>/setup.bash
@@ -83,7 +83,7 @@ lio.prior_map_localization.num_threads: 4
 开发电脑推送新标签后，在 Jetson 执行：
 
 ```bash
-cd ~/AdaGraph-LIO
+cd ~/HybridSLAM
 source /opt/ros/<ROS_DISTRO>/setup.bash
 BUILD_JOBS=2 ./scripts/deploy_jetson_version.sh jetson-v0.2.0
 source install/setup.bash
@@ -95,7 +95,7 @@ source install/setup.bash
 2. 从 `origin` 获取标签。
 3. 把当前部署的 ref 记录到 `log/jetson_previous_ref`。
 4. 切换到指定的稳定版本。
-5. 清理 CMake 缓存并重新编译 Super-LIO 依赖链。
+5. 清理 CMake 缓存并重新编译 Point-LIO 依赖链。
 6. 如果编译失败，自动切回记录的 ref 并重新编译，恢复到部署前的可用状态。
 
 ## 6. 回滚
@@ -104,7 +104,7 @@ source install/setup.bash
 `log/jetson_previous_ref` 中）：
 
 ```bash
-cd ~/AdaGraph-LIO
+cd ~/HybridSLAM
 source /opt/ros/<ROS_DISTRO>/setup.bash
 BUILD_JOBS=2 ./scripts/deploy_jetson_version.sh jetson-v0.1.0
 source install/setup.bash

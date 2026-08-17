@@ -86,7 +86,7 @@ def _summary(topic: str, message: Optional[OccupancyGrid]) -> Dict[str, Any]:
 
 class OccupancyRecorder(Node):
     def __init__(self, topic: str) -> None:
-        super().__init__("adagraph_occupancy_summary_recorder")
+        super().__init__("hybrid_slam_occupancy_summary_recorder")
         self.topic = topic
         self.latest: Optional[OccupancyGrid] = None
         self.received_count = 0

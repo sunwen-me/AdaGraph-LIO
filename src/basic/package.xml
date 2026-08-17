@@ -10,13 +10,6 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>eigen</depend>
-  <depend>libpcl-all-dev</depend>
-  <depend>libgoogle-glog-dev</depend>
-  <depend>libgflags-dev</depend>
-
-  <!-- basic_core itself only requires Eigen; the package keeps the PCL/glog
-       dependencies for the legacy basic compatibility facade. -->
-
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

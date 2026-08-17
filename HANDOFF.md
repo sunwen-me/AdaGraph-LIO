@@ -1,1066 +1,462 @@
-# AdaGraph-LIO Project Handoff
+# AdaGraph-LIO large_loop 回环问题交接
 
-Last updated: 2026-08-13
+更新时间：2026-08-17（Asia/Shanghai）
 
-This file is the cross-session handoff for the AdaGraph-LIO, robot simulation,
-real-robot navigation, and deployment work. Read this file before making
-changes. The current architecture and its completion evidence are in
-`doc/architecture/`; when this file disagrees with that directory, the
-architecture documents and current code win. Earlier Jetson-only run records
-remain historical evidence, not a current deployment recipe.
+## run22 最新结论（覆盖下文旧的“下一步”判断）
 
-## 1. Quick State
+已定位并修复真正的后端权重根因：`OdometryCovarianceEstimator` 过去直接使用未标定、强相关的逐点 Hessian 逆矩阵，可能把连续里程计因子压到约 `0.0001 m / 0.00003 rad` 的虚假精度。固定真实轨迹重放证明，这会令四条正确回环残留约 `0.68--0.89 m`；使用标定下限 `0.035 m / 0.012 rad` 时残差仅约 3 cm。
 
-### Repositories and machines
+修复后 Hessian 只能放大弱方向不确定度，不能令协方差比标定规则更紧；同时 iSAM2 会在后续每次图更新后刷新已接受回环的残差统计。
 
-| Item | Location / state |
-| --- | --- |
-| AdaGraph-LIO development checkout | `/home/sw/AdaGraph-LIO` |
-| Simulation / Nav2 / MoveIt workspace | `/home/sw/robot-sim` |
-| Local ROS | ROS 2 Lyrical |
-| Active real-robot target | AidLux X1, SSH alias `aidlux`, ROS 2 Humble |
-| X1 checkout | `/home/aidlux/AdaGraph-LIO` |
-| X1 prior-map directory | `/home/aidlux/maps/real_20260728_213413` |
-| Jetson AdaGraph-LIO checkout | `/home/jetson/AdaGraph-LIO` |
-| Jetson auxiliary workspace | `/home/jetson/dev_ws` |
-| Jetson Nav2 overlay | `/home/jetson/nav2_ws` |
-| Jetson ROS | ROS 2 Jazzy |
-| Last working Jetson WiFi address | `jetson@192.168.1.182` |
-| AdaGraph-LIO Git remote | `https://github.com/sunwen-me/AdaGraph-LIO.git` |
-
-The Jetson address below is historical and was unreachable from the development
-PC on 2026-08-02. Do not assume any ROS process from the 2026-07-30 Jetson test
-is still running. The X1 is the current target, but live ROS topology and
-physical safety still need to be checked before any motion test.
-
-Do not put SSH, WiFi, GitHub tokens, or passwords into this repository.
-
-### Git state
-
-- Current branch: `feature/point-lio-frontend`.
-- Baseline before the Point-LIO architecture refactor: `main@2a2850e`
-  (`origin/main`).
-- `develop` is still at `9c46e59` and is behind current `main`.
-- `fix/ultra-review` points to `a8aa15e` and is retained as the review archive.
-- The Point-LIO architecture/lifecycle refactor is documented in
-  `doc/architecture/REFACTORING_STATUS.md`; it introduces the standard typed
-  runtime path, records validation evidence, and retires the separate
-  `SuperLIOReLoc` executable. Inspect `git status`, `git log -1`, and the
-  architecture status before making a follow-up change.
-
-The `/home/sw/robot-sim` directory has a newly initialized Git repository with
-no commits. Almost the whole workspace is still untracked. Two real-navigation
-files were changed during the last test:
+完整实验：
 
 ```text
-/home/sw/robot-sim/src/robot_nav2_bringup/config/nav2_params_real.yaml
-/home/sw/robot-sim/src/robot_nav2_bringup/rviz/nav2.rviz
+log/large_loop_cartographer_sequence_20260817_run22_odom_covariance_floor
 ```
 
-## 2. Non-Negotiable Architecture
-
-The prior-map localization design was explicitly chosen by the user. Preserve
-these boundaries unless the user asks to redesign them.
-
-1. There is no independent prior-map localization ROS 2 node.
-2. Standard Super-LIO and Point-LIO both use
-   `PriorMapLocalization -> RelocalizationScheduler -> GlobalAlignmentState`.
-   `PriorMapLocalization` is a downstream/system adapter, not frontend-owned
-   state in the standard composition.
-3. Each frontend owns only local odometry and produces a smooth
-   `T_odom_base`; global correction never resets the frontend filter or local
-   map.
-4. Sensor callbacks only convert and enqueue. `SlamSystem::ProcessPending()`
-   runs frontend processing; prior-map crop, KISS, and FastVGICP/PCL GICP run
-   on the relocalization worker.
-5. FastVGICP never resets or overwrites frontend state.
-6. The global correction is:
+run22 接受三条 GT 可解释回环，最终最大因子残差：
 
 ```text
-T_map_odom = T_map_lidar_vgicp * inverse(T_odom_lidar_same_timestamp)
+translation 0.0125161 m
+rotation    0.00121325 rad
 ```
 
-7. `GlobalAlignmentState` is the sole semantic owner of `map -> odom`.
-   `PublicationBridge`/`TfBridge` publish only its committed cache;
-   `ROSWrapper` is a compatibility facade and is not instantiated by a
-   standard application.
-8. The final navigation TF chain is:
+三条独立残差为 `0.0105 / 0.0125 / 0.0035 m`。最终指标：
 
 ```text
-map -> odom -> base_footprint -> base_link -> livox_frame
+共享走廊 PCD overlap             92.85%
+PCD NN 中位距离                  0.0706 m
+PCD 匹配点 |dZ| 中位数           0.0236 m
+轨迹回访 |dZ| 中位数             0.0141 m
+APE RMSE                         11.1271 m
+GT 对齐后最终点误差              1.5323 m
 ```
 
-9. Small tracking corrections are smoothed in SE(3): translation uses linear
-    interpolation and rotation uses quaternion slerp.
-10. Initialization, LOST recovery, and an explicit manual recovery may jump
-    immediately after passing quality gates.
-11. Quality gating happens before smoothing.
-12. Large clouds are passed by shared pointer / move where possible. The full
-    prior map is loaded once, voxel filtered once, and spatially indexed; it is
-    not deep-copied every frame.
+run20 对应的 NN 中位距离为 `0.1637 m`、PCD `|dZ|` 中位数为 `0.0722 m`、最大因子残差为 `0.555 m`，因此 run22 已显著改善局部双轮廓。22/22 测试目标、166 个测试全部通过。
 
-Relevant implementation:
+第四个候选 `4444->244` 仍因 FastVGICP `hasConverged=false` 被严格拒绝，没有绕过验收；前三条已经足以把最终重访区压紧。当前不应再调整 Huber、放宽配准或恢复兜底。下一步若继续，应处理 BEV/VGICP 的运行非确定性和子图内部剩余形变，而不是后端信息权重。
+
+## 给新会话的直接指令
+
+接手 `/home/sw/AdaGraph-LIO` 的 UrbanV2X `large_loop` 3D LiDAR SLAM 回环问题，直接在当前工作区继续实现、编译、测试和实验，不要停留在计划或泛泛分析。
+
+必须保留当前脏工作区。不要执行 `git reset`、`git checkout --`、批量删除或回滚其他人的改动。当前根仓库状态：
+
+- 分支：`feature/point-lio-frontend`
+- HEAD：`8c082df`
+- `git status --short` 约 407 项；其中 `src/hybrid_slam/` 当前整体显示为未跟踪。
+- 这些改动并不全属于本次回环任务，不要试图清理。
+
+不要杀用户已有的 BEVPlace2 sidecar。当前 sidecar：
 
 ```text
-src/super_lio/include/lio/prior_map_localization.h
-src/super_lio/src/lio/prior_map_localization.cpp
-src/super_lio/src/lio/point_lio_frontend.cpp
-src/super_lio/src/system/legacy_downstream_pipeline.cpp
-src/super_lio/src/system/global_alignment_state.cpp
+PID 317024
+/home/sw/Software/anaconda3/envs/mibot/bin/python
+  /home/sw/AdaGraph-LIO/scripts/bevplace2_descriptor_service.py
+  --socket /tmp/adagraph_bevplace2.sock
+  --source /run/media/sw/仓库/BEVPlace2
+  --checkpoint /run/media/sw/仓库/BEVPlace2/runs/Aug08_10-17-29/model_best.pth.tar
 ```
 
-## 3. Localization Roles
+目前没有遗留的 `large_loop`、`ros2 bag play` 或 `hybrid_slam_point_lio` 实验进程。
 
-### LIO front end
+## 原始目标与判定标准
 
-- ESKF + OctVox provide continuous local odometry.
-- The local world used by Super-LIO is semantically `odom`, not `map`.
-- `/lio/cloud_world` is therefore published with `frame_id: odom` when Nav2 TF
-  mode is enabled.
-- AdaGraph currently computes covariance and stores the pose graph, but its
-  experimental global localization factors are disabled by default.
-- Do not write backend poses back into ESKF. The Ultra review removed that path
-  because it would make the ESKF state and odom-frame voxel map inconsistent.
+系统前端为 Point-LIO，后端为 iSAM2 + GTSAM Pose3，候选检索主要使用 BEVPlace2。问题是开回环后的地图仍可能出现重影、Z 分层和“双球”。
 
-### KISS-Matcher
+必须区分：
 
-KISS is the coarse global proposal mechanism. It is not a continuous fixed-Hz
-tracker.
+1. 外观检索找到候选；
+2. 子图 3D 几何验证成功；
+3. 回环 Pose3 因子进入 iSAM2；
+4. iSAM2 实际满足回环约束；
+5. 最终 PCD 在重访区域视觉和定量上收敛。
 
-It should run only for:
+不能只看 APE。只有回环边可由 GT/几何解释，且最终 PCD 的双层与重影明显改善，才可以说回环有效。
 
-- startup initialization;
-- LOST recovery;
-- `/lio/relocalization/trigger` manual requests.
-
-Normal tracking uses FastVGICP only.
-
-The current implementation:
-
-- builds a multi-frame local odom submap;
-- submits every frame during initialization so the startup submap is filled
-  quickly, then returns to `min_frame_interval` while tracking;
-- evaluates descriptor ratio-test ON and OFF when
-  `adaptive_ratio_test: true`;
-- reports processed point, keypoint, match, rotation-inlier, and final-inlier
-  counts;
-- sends every valid KISS candidate through cropped-map FastVGICP;
-- chooses the passing candidate with the lowest FastVGICP fitness;
-- automatically retries startup failures rather than waiting forever for a
-  manual service call.
-
-Important limitation: KISS was reliable when mapping and localization started
-at the same place, but was inconsistent from an arbitrary place in the real
-house. Adaptive ratio mode improved candidate handling but did not turn merged
-PCD matching into a guaranteed place-recognition system. One stationary real
-test needed many retries before finding the correct candidate. Do not weaken
-the quality gate merely to make initialization appear successful.
-
-For robust arbitrary-start localization, the next serious options are:
-
-- a manually supplied initial pose that is then verified/refined by VGICP;
-- a trajectory-keyframe place-recognition database such as Scan Context;
-- a stronger global registration / descriptor database built while mapping.
-
-A merged PCD alone does not preserve map trajectory or observation viewpoints.
-
-### FastVGICP
-
-- CPU FastVGICP is vendored under
-  `src/super_lio/3rdparty/fast_gicp`.
-- It is part of the Super-LIO package; a system-wide `fast_gicp` installation
-  is no longer required for the intended build.
-- It is the back-end prior-map registration stage, not the LIO scan-to-map
-  front end.
-- CUDA is not required. `num_threads` controls CPU parallelism.
-- PCL GICP remains a build fallback in the code path, but Jetson validation was
-  intended to use the vendored FastVGICP branch.
-
-## 4. Current Localization Parameters
-
-`src/super_lio/config/livox_360.yaml` currently contains:
-
-```yaml
-lio.sensor.blind: 0.3
-
-lio.kiss_matcher.voxel_size: 0.2
-lio.kiss_matcher.use_quatro: false
-lio.kiss_matcher.use_voxel_sampling: true
-lio.kiss_matcher.use_ratio_test: true
-lio.kiss_matcher.adaptive_ratio_test: true
-lio.kiss_matcher.min_final_inliers: 5
-lio.kiss_matcher.max_source_points: 30000
-lio.kiss_matcher.max_target_points: 120000
-
-lio.prior_map_localization.map_voxel_size: 0.1
-lio.prior_map_localization.local_voxel_size: 0.1
-lio.prior_map_localization.local_frames: 8
-lio.prior_map_localization.min_frame_interval: 5
-lio.prior_map_localization.crop_radius: 40.0
-lio.prior_map_localization.max_iterations: 100
-lio.prior_map_localization.num_threads: 4
-lio.prior_map_localization.max_fitness: 0.1
-lio.prior_map_localization.initial_max_fitness: 0.01
-lio.prior_map_localization.max_translation: 2.0
-lio.prior_map_localization.max_rotation_deg: 20.0
-lio.prior_map_localization.lost_fitness: 2.0
-lio.prior_map_localization.smooth_translation_alpha: 0.1
-lio.prior_map_localization.smooth_rotation_alpha: 0.1
-```
-
-`initial_max_fitness: 0.01` is intentionally strict. During testing, false
-candidates with fitness values around `0.047`, `0.063`, `0.16`, `0.58`, and
-`1.37` were rejected. A correct candidate was accepted around `0.0027`.
-Tracking commonly stayed around `0.003` to `0.006` while stationary.
-
-`Livox_mid360.py` now exposes independent launch arguments:
+UrbanV2X 数据：
 
 ```text
-localization_voxel_size (VGICP, default 0.10)
-kiss_voxel_size         (KISS, default 0.20)
-kiss_use_quatro
-kiss_use_ratio_test
-kiss_adaptive_ratio_test
+BAG_DIR=/run/media/sw/仓库/urbanv2x/large_loop/large_loop_ros2_mcap
+GROUND_TRUTH=/run/media/sw/仓库/urbanv2x/large_loop/gt_large_loop_aligned.tum
+BAG_TOPICS='/velodyne_points /imu/data'
+PARAMS_FILE=/home/sw/AdaGraph-LIO/src/hybrid_slam/config/point_lio_urbanv2x.yaml
 ```
 
-Do not couple the KISS feature scale back to the VGICP voxel scale without a
-measured reason.
+正确 IMU 话题是 `/imu/data`，不是 `/handsfree/imu`。
 
-## 5. TF and Real Sensor Installation
+## 已完成的核心设计
 
-### Real robot geometry
+### 坐标链
 
-- `base_footprint` is the ground-projected drive-axis reference used by Nav2.
-- `base_link` is offset behind the drive axis by about `0.196 m`.
-- The Mid-360 is at approximately `x = 0.143 m` and `z = 0.735 m` in
-  `base_link`.
-- Therefore its x offset relative to `base_footprint` is about `-0.053 m`.
-- The real Mid-360 is physically upside down.
-- The mounting correction is a 180-degree rotation around **X**, not Y.
-- The IMU is treated normally. Do not negate both IMU and LiDAR axes.
-
-Current real configuration:
-
-```yaml
-lio.extrinsic.odom_robo: [-0.053, 0.0, 0.735, 180.0, 0.0, 0.0]
-```
-
-`Livox_mid360.py` publishes these static transforms unless disabled:
+回环测量统一定义为：
 
 ```text
-base_footprint -> base_link
-base_link -> livox_frame
+T_match_query = inverse(T_map_match) * T_map_query
+p_match = T_match_query * p_query
 ```
 
-Do not also publish the same transforms from another URDF / static publisher.
-Duplicate TF publishers previously caused frame flips and TF buffer failures.
-
-### Simulation geometry
-
-- The simulated IMU is normally oriented.
-- RGL does not reliably inherit the orientation semantics expected from the
-  intermediate Mid-360 model link.
-- The working design attaches the RGL reference directly to `base_link` using
-  the same physical connection transform as the real sensor.
-- The simulated LiDAR is also rotated by `RotX(pi)`.
-- `sim.yaml` contains the matching `lidar_imu` rotation.
-- Wheel odometry TF is disabled in
-  `/home/sw/robot-sim/src/robot_description/config/ros2_controllers.yaml`:
-
-```yaml
-enable_odom_tf: false
-```
-
-Super-LIO must be the source of `odom -> base_footprint` during LIO navigation.
-
-### Frame debugging order
-
-When a cloud appears upside down or left/right reversed, inspect each transform
-separately before changing an extrinsic:
-
-```bash
-ros2 topic echo /livox/lidar --once --field header
-ros2 run tf2_ros tf2_echo base_link livox_frame
-ros2 run tf2_ros tf2_echo odom base_footprint
-ros2 run tf2_ros tf2_echo map odom
-```
-
-Do not judge the point orientation by changing RViz Fixed Frame repeatedly.
-Verify the raw sensor frame, base frame, odom frame, and map frame in order.
-
-## 6. LiDAR Message Types
-
-The real Mid-360 input supports both:
+配准 source 是 query 侧子图（query base 表达），target 是 match 侧子图（match base 表达）。FastVGICP 输出 `T_match_query`，后端插入：
 
 ```text
-lidar_type:=1  livox_ros_driver2 CustomMsg
-lidar_type:=9  sensor_msgs/msg/PointCloud2 using Livox PointXYZRTLT fields
+BetweenFactor(match, query, T_match_query)
 ```
 
-For PointCloud2, `livox_ros_driver2` must use `xfer_format=0`, and the actual
-field layout and timestamps should be checked once on the real sensor. This is
-not because PointCloud2 is unsupported; it is to verify that the installed
-driver version publishes the expected per-point timing fields and that LiDAR
-and IMU timestamps share a usable clock domain.
-
-See `doc/livox_mid360_pointcloud2.md`.
-
-## 7. Ground Segmentation and Occupancy Grid
-
-The DFKI ground segmentation code is vendored under:
+子图锚点重表达使用：
 
 ```text
-src/super_lio/3rdparty/ground_segmentation
+T_base_submap = inverse(T_odom_base(endpoint)) * T_odom_base(anchor)
 ```
 
-The occupancy-grid and ground-filter code is maintained separately from the
-main LIO in:
+合成 6DoF 测试已验证 Z、roll、pitch 和变换方向。已知变换：
 
 ```text
-src/super_lio/include/ros/ground_segmentation_filter.h
-src/super_lio/src/ros/ground_segmentation_filter.cpp
-src/super_lio/include/ros/occupancy_grid_publisher.h
-src/super_lio/src/ros/occupancy_grid_publisher.cpp
+XYZ expected  [4, -3, 1.8]
+XYZ recovered [3.999827, -3.000032, 1.800029]
+RPY expected  [0.08, -0.06, 0.35]
+RPY recovered [0.080000, -0.059998, 0.350003]
 ```
 
-Current real configuration enables both:
+因此此前约 8–10 m 的 Z 修正是累计高度漂移，不是矩阵方向写反。
 
-```yaml
-lio.occupancy_grid.enable: true
-lio.occupancy_grid.topic: /map
-lio.occupancy_grid.frame_id: map
-lio.occupancy_grid.resolution: 0.1
-lio.occupancy_grid.use_unknown: true
-lio.occupancy_grid.ground_filter.enable: true
-lio.occupancy_grid.ground_filter.auto_dist_to_ground: true
-lio.occupancy_grid.ground_filter.dist_to_ground: 0.0
-```
+### Cartographer 风格滚动子图
 
-When `auto_dist_to_ground: true`, `dist_to_ground: 0.0` is only the default /
-fallback input. The filter estimates the ground distance from the cloud. If
-the seed area is insufficient, it falls back using the configured sensor mount
-height.
+当前主要参数在：
 
-Important map limitation discovered on the real map:
+- `src/hybrid_slam/config/point_lio_urbanv2x.yaml`
+- `src/hybrid_slam/src/lio/pcl_loop_closure.cpp`
+- `src/hybrid_slam/src/backend/loop_closure_scheduler.cpp`
+- `src/hybrid_slam/src/lio/bevplace2_loop_detector.cpp`
 
-- A merged PCD contains points, but not the historical sensor origins for
-  every scan.
-- Ground points alone are not enough to reconstruct all observed free space.
-- Many floor and wall points project into the same 2D cells, so obstacle hits
-  override floor evidence.
-- Online ray casting works after localization because the current sensor origin
-  is known, but it only carves the area currently observed.
+当前方案：
 
-Last measured real `/map` statistics:
+- 每 35 个关键帧完成一个基础子图；
+- 相邻两个基础子图组成约 70 帧滚动支持面，步长 35，约 50% 重叠；
+- 在固定 odom 锚点局部坐标中融合；
+- 使用体素质心，不再达到点数上限后截断时间序列尾部；
+- query/match 两侧分别裁剪 40 m；
+- BEVPlace2 仅负责候选、序列一致性和 XY/yaw 粗初值；
+- 最终只有 `joint_submaps` 的严格 3D 验证可以产生回环边；
+- raw keyframe 和 `submap_pair` 最终兜底均已移除；
+- 多初值包括 graph、BEV RANSAC 和 ±8 m uniqueness probes；
+- 使用粗 VGICP + 细 FastVGICP；
+- 同时检查双向 overlap、互近邻、双向 RMSE、空间范围、Z 范围、协方差特征值、空间体素、多初值一致性、图预测修正、相对 Z/roll/pitch；
+- 失败直接拒绝，不能靠放宽 fitness 或忽略 `hasConverged` 接受。
+
+相关当前参数：
 
 ```text
-Before map->odom localization / online carving:
-  size=516x139, resolution=0.1
-  unknown=66718, free=252, occupied=4754
-
-After localization and live ray casting:
-  size=516x139, resolution=0.1
-  unknown=66620, free=2837, occupied=2267
+lio.backend.submap_max_keyframes: 35
+lio.loop_closure.registration_crop_radius_m: 40.0
+lio.loop_closure.coarse_registration_voxel_size_m: 4.0
+lio.loop_closure.maximum_bidirectional_inlier_rmse_m: 0.75
+lio.loop_closure.minimum_support_extent_m: 15.0
+lio.loop_closure.minimum_support_z_extent_m: 2.0
+lio.loop_closure.minimum_support_voxels: 20
+lio.loop_closure.minimum_pose_free_sequence_consensus: 3
+lio.loop_closure.maximum_pose_free_graph_correction_m: 3.0
+lio.loop_closure.maximum_pose_free_graph_correction_rad: 0.15
+lio.loop_closure.translation_sigma_m: 0.25
+lio.loop_closure.rotation_sigma_rad: 0.04
 ```
 
-This proves the map publisher and ray carving work, but the static PCD-derived
-grid is still too sparse for unrestricted whole-house navigation. The next
-mapping run should either:
+注意 YAML 中静态默认仍可能写着 `lio.loop_closure.enable: false` 和 `plugin: scan_context`；完整实验脚本会覆盖为本次需要的 BEVPlace2 回环设置。不要仅凭 YAML 这两行判断实验未开回环。
 
-1. enable occupancy-grid generation while mapping so sensor origins are used
-   online, then save the resulting Nav2 grid; or
-2. record/replay the mapping bag and rebuild the grid from poses plus scans; or
-3. enable the mapping-time grid artifact below during the next mapping run.
+### 后端位姿协方差
 
-Do not solve the black-map problem by setting all unknown cells to free. That
-would allow planning through truly unobserved space.
-
-The attempted visual screenshot of the RViz map on 2026-07-30 failed because
-XWayland `XGetImage` was unavailable. The numerical map inspection above is
-valid; a proper visual review is still pending.
-
-## 8. Real Map Inventory
-
-Last real PCD used for localization:
+此前把约 0.55 m 的逐点配准 RMSE 直接当成整个位姿标准差，导致数千个几何对应点估计出的真回环因子过松。现已改为根据空间支持体素估计有效独立观测数，同时保留系统误差下限：
 
 ```text
-/home/jetson/maps/real_20260730_105304/map.pcd
+translation sigma floor = 0.25 m
+rotation sigma floor = 0.04 rad
 ```
 
-Recorded properties:
+日志会输出：
 
 ```text
-points: 92678
-size: about 1.5 MB
-x range: -26.453 to 28.939 m
-y range: -11.479 to 4.332 m
-z range: -0.790 to 4.560 m
+covariance_sigma=...
+point_rmse=...
+support_voxels=...
+pose_standard_error=...
 ```
 
-That directory had no `nav2_map.yaml` or PGM at the time of the last test.
-Current code can now generate these files while mapping from online occupancy
-evidence; it has not yet been run on the Jetson/real robot.
+相关代码：
 
-Older map directories with Nav2 PGM/YAML files existed at:
+- `src/hybrid_slam/src/lio/pcl_loop_closure.cpp`
+- `src/hybrid_slam/test/test_isam2_optimizer.cpp`
+
+新增的长里程计链回归测试模拟 4200 条里程计累计约 10 m 高度漂移，要求严格验证回环加入后残差 `< 0.30 m`。修改后全量测试通过。
+
+### 回环专用 Huber 阈值
+
+严格 3D 验证后的真回环，加入时可能距离漂移图 8–10 m。普通 Huber `delta=1.345` 会长期把剩余 2–3 sigma 修正降权。
+
+已加入：
 
 ```text
-/home/jetson/maps/real_20260728_213413
-/home/jetson/maps/real_20260729_225145
+lio.backend.loop_closure_huber_delta: 3.0
 ```
 
-Do not mix an old occupancy grid with the newer PCD unless their coordinate
-frames are explicitly verified.
+相关代码：
 
-## 9. Last Real Localization and Navigation Test
+- `src/hybrid_slam/include/hybrid_slam/backend/backend_config.h`
+- `src/hybrid_slam/src/backend/isam2_optimizer.cpp`
+- `src/hybrid_slam/src/ros/parameter_bridge.cpp`
+- `src/hybrid_slam/config/point_lio_urbanv2x.yaml`
 
-Date: 2026-07-30.
+普通相对因子仍使用 1.345；仅 `ConstraintType::kLoopClosure` 使用配置的 3.0。仍保留鲁棒核，没有改成普通高斯。
 
-What was verified:
+## 测试状态
 
-- Livox driver, Super-LIO, DDSM driver, DM IMU, and Xbox packages could run on
-  the Jetson.
-- KISS eventually proposed the correct initialization and VGICP accepted it.
-- `map -> odom` and `odom -> base_footprint` were both available.
-- Typical accepted tracking fitness was about `0.003` to `0.006`.
-- One observed pose was approximately
-  `map -> base_footprint = (0.95, -0.19, yaw 42.5 deg)`. This was only the pose
-  at that test time; never use it as a hard-coded next-run initial pose.
-- `/lio/cloud_world` ran at approximately 10 Hz with `frame_id: odom`.
-- `/lio/odom` ran at approximately 10 Hz.
-- Nav2 baseline RPP nodes all reached `active`.
-- A plan-only `ComputePathToPose` request from the current pose to approximately
-  `(1.17, 0.01)` succeeded with `error_code: 0` and planning time `2.881 ms`.
-- No `NavigateToPose` command was sent in that verification, so it did not prove
-  full closed-loop vehicle motion along a Nav2 route.
+最近一次构建和测试：
 
-Observed Jetson load during this run:
-
-- `super_lio_node` used roughly one CPU core (`80-90%` in `ps`).
-- Livox, DDSM, DM IMU, and Nav2 added additional load.
-- `/lio/cloud_world` was normally 10 Hz but occasional scheduler gaps reached
-  about 0.35 s.
-
-Therefore the real Nav2 obstacle-source timeout was changed from exactly
-`0.10 s` to a tolerant `0.50 s` in both local and global costmaps. This changes
-only stale-sensor monitoring; it does not reduce the cloud rate.
-
-## 10. Real Robot Bringup
-
-### Source environment
-
-On Jetson:
-
-```bash
-source /opt/ros/jazzy/setup.bash
-source /home/jetson/nav2_ws/install/setup.bash
-source /home/jetson/AdaGraph-LIO/install/setup.bash
-source /home/jetson/dev_ws/install/setup.bash
+```text
+22/22 tests passed
 ```
 
-### LiDAR driver
-
-```bash
-ros2 launch livox_ros_driver2 msg_MID360_launch.py
-```
-
-Before starting another driver, check for an existing process:
-
-```bash
-ros2 node list | grep livox
-```
-
-### Super-LIO mapping
-
-Choose a new output directory and start without a prior map:
-
-```bash
-MAP_DIR=/home/jetson/maps/real_$(date +%Y%m%d_%H%M%S)
-mkdir -p "$MAP_DIR"
-
-ros2 launch super_lio Livox_mid360.py \
-  rviz:=false \
-  lidar_type:=1 \
-  use_prior_map:=false \
-  save_map:=true \
-  save_map_dir:="$MAP_DIR" \
-  map_name:=map.pcd
-```
-
-Drive slowly, cover corridors in both directions, close loops, and observe
-rooms from multiple headings. End Super-LIO with normal `Ctrl+C`; the final PCD
-merge happens during shutdown. Do not use `kill -9` for map saving.
-
-### Super-LIO prior-map localization
-
-```bash
-ros2 launch super_lio Livox_mid360.py \
-  rviz:=false \
-  lidar_type:=1 \
-  use_prior_map:=true \
-  prior_map_file:=/home/jetson/maps/real_20260730_105304/map.pcd \
-  localization_voxel_size:=0.10 \
-  kiss_voxel_size:=0.20 \
-  kiss_adaptive_ratio_test:=true
-```
-
-Manual global-relocalization request:
-
-```bash
-ros2 service call /lio/relocalization/trigger std_srvs/srv/Trigger "{}"
-```
-
-The service response `manual relocalization request cached` only confirms that
-the request was queued. Success requires later logs showing a selected KISS
-candidate, accepted VGICP result, and a live `map -> odom` transform.
-
-### Nav2 only
-
-Start Nav2 only after both `/map` and the full TF chain exist:
-
-```bash
-ros2 launch robot_nav2_bringup nav2.launch.py \
-  use_sim_time:=false \
-  controller_mode:=rpp \
-  nav2_params_file:=/home/jetson/dev_ws/src/robot_nav2_bringup/config/nav2_params_real.yaml \
-  cmd_vel_output:=/cmd_vel
-```
-
-The real Nav2 output is `geometry_msgs/msg/TwistStamped` on `/cmd_vel`.
-
-Do not currently use `real_system.launch.py` blindly. It has two problems:
-
-1. its default map directory is the stale
-   `/home/jetson/maps/real_20260729_225145`;
-2. it starts `nav2_map_server` on `/map` while current Super-LIO also publishes
-   `/map`, creating two possible global map sources.
-
-Before restoring the one-command launch, choose exactly one `/map` owner:
-
-- stable saved PGM/YAML via `map_server`, with Super-LIO occupancy disabled; or
-- Super-LIO live occupancy grid, with `map_server` omitted.
-
-### Desktop RViz for the real robot
-
-The development PC can see Jetson ROS topics on the same network and ROS domain.
+典型命令：
 
 ```bash
 source /opt/ros/lyrical/setup.bash
-source /home/sw/nav2_ws/install/setup.bash
+cd /home/sw/AdaGraph-LIO
+colcon build --packages-select hybrid_slam --symlink-install \
+  --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
 source /home/sw/AdaGraph-LIO/install/setup.bash
-source /home/sw/robot-sim/install/setup.bash
-
-rviz2 -d /home/sw/robot-sim/src/robot_nav2_bringup/rviz/nav2.rviz
+colcon test --packages-select hybrid_slam \
+  --event-handlers console_cohesion+ --return-code-on-test-failure
+colcon test-result --test-result-base build/hybrid_slam --verbose
 ```
 
-The local RViz source config was changed to:
+## 可信实验结果
 
-- Fixed Frame: `map`;
-- point cloud: `/lio/cloud_world`;
-- prior occupancy grid: `/map`;
-- local/global Nav2 costmaps enabled;
-- RobotModel disabled because the real bringup did not publish
-  `/robot_description` to the desktop.
+### loop-off 基线
 
-Use `Nav2 Goal` only in a clearly observed nearby free region during the first
-motion test.
-
-## 11. DDSM Base Driver
-
-The real measured geometry is:
+目录：
 
 ```text
-wheel separation: 0.395 m
-wheel diameter:   0.100 m
-wheel radius:     0.050 m
+log/large_loop_cartographer_sequence_20260817_run12_loop_off_endpoint_pcd
 ```
 
-The generic `ddsm_params.yaml` still used `wheel_separation: 0.3` during one
-test and must not be used for the current chassis. The intended file is:
+指标：
 
 ```text
-/home/jetson/dev_ws/src/ddsm_driver/config/ddsm_robot_current.yaml
+APE RMSE                         12.0817 m
+GT 对齐后最终点误差              4.5025 m
+首尾轨迹 XY 中位差               7.2696 m
+首尾轨迹 |dZ| 中位数             7.9139 m
+共享走廊 PCD 双向 overlap         9.853%
+尾段到首段 PCD NN 中位距离        4.8512 m
 ```
 
-Last observed important values:
+### run19：四条真回环，旧位姿级权重
 
-```yaml
-serial_port: /dev/ddsm
-protocol: hat_binary
-wheel_radius: 0.05
-wheel_separation: 0.395
-control_rate: 100.0
-cmd_vel_timeout: 0.6
-enable_stamped_cmd_vel: true
-left_motor_sign: 1
-right_motor_sign: -1
-imu_topic: /imu/data
-```
-
-Use the current config explicitly:
-
-```bash
-ros2 launch ddsm_driver ddsm_driver.launch.py \
-  params_file:=/home/jetson/dev_ws/src/ddsm_driver/config/ddsm_robot_current.yaml \
-  serial_port:=/dev/ddsm \
-  imu_topic:=/imu/data \
-  load_saved_pid:=true
-```
-
-Verify the live value rather than trusting the launch command:
-
-```bash
-ros2 param get /ddsm_driver_node wheel_separation
-ros2 param get /ddsm_driver_node wheel_radius
-```
-
-The saved yaw PI overlay was last observed at:
+目录：
 
 ```text
-/home/jetson/.config/ddsm_driver/autotuned_pid.yaml
+log/large_loop_cartographer_sequence_20260817_run19_backend_refined
 ```
 
-with approximately:
-
-```yaml
-pid_kp: 0.0532275045422
-pid_ki: 0.0532275045422
-pid_kd: 0.0
-pid_output_limit: 0.7
-```
-
-No D term is expected from the current first-order yaw model; the auto tuner is
-designed to produce a PI candidate and validate positive/negative rotation.
-
-Auto-tune service sequence:
-
-```bash
-ros2 service call /ddsm_driver/auto_tune_yaw std_srvs/srv/Trigger "{}"
-ros2 service call /ddsm_driver/auto_tune_status std_srvs/srv/Trigger "{}"
-ros2 service call /ddsm_driver/save_tuned_pid std_srvs/srv/Trigger "{}"
-```
-
-Run auto tuning only with motors powered, the robot lifted or in a controlled
-clear area as required by the procedure, and a working IMU stream.
-
-The front drive axle and about 20 cm of rear overhang were incorporated into
-the Nav2 footprint:
-
-```yaml
-footprint: "[[-0.36, -0.245], [-0.36, 0.245], [0.07, 0.245], [0.07, -0.245]]"
-```
-
-This configuration exists in:
+四条回环均可由 GT 解释，最终 PCD 已明显收敛：
 
 ```text
-/home/sw/robot-sim/src/robot_nav2_bringup/config/nav2_params_real.yaml
-/home/jetson/dev_ws/src/robot_nav2_bringup/config/nav2_params_real.yaml
+PCD 双向 overlap                89.93%
+PCD NN 中位距离                 0.304 m
+PCD 匹配点 |dZ| 中位数          0.129 m
+最大后端回环平移残差             0.746 m
 ```
 
-## 12. DM IMU
+球体等清晰边缘仍可见双轮廓，因此继续查后端权重。
 
-Two IMU roles must not be confused:
+### run20：当前最可信、最佳完整结果
 
-- Super-LIO normally uses the Mid-360 internal IMU on `/livox/imu`.
-- DDSM yaw closed-loop / auto tuning uses the separate DM IMU on `/imu/data`.
-
-The standalone DM command used on Jetson was:
-
-```bash
-ros2 run dm_imu dm_imu_node --ros-args \
-  -p port:=/dev/dm_imu \
-  -p baud:=921600
-```
-
-The local source package is currently at:
+目录：
 
 ```text
-/home/sw/dev_ws/src/dm_imu
+log/large_loop_cartographer_sequence_20260817_run20_pose_covariance
 ```
 
-The Jetson package is under:
+接受四条回环：
 
 ```text
-/home/jetson/dev_ws/src/dm_imu
+4304 -> 104
+  measurement t=[1.45268, 0.72889, 0.0310943]
+  rpy=[-0.0192213, -0.0332754, 0.88561]
+  GT translation error=0.4486 m
+  GT rotation error=0.03797 rad
+
+4339 -> 139
+  measurement t=[0.135579, -6.53708, 0.0330462]
+  rpy=[-0.00615399, -0.0105892, -0.00890057]
+  GT translation error=0.1517 m
+  GT rotation error=0.00588 rad
+
+4374 -> 174
+  measurement t=[0.509354, -6.62893, 0.0179513]
+  rpy=[0.0107256, -0.000612914, -0.175658]
+  GT translation error=0.3436 m
+  GT rotation error=0.01157 rad
+
+4444 -> 244
+  measurement t=[-3.0247, -9.75579, -0.0955032]
+  rpy=[0.00569911, -0.0216941, 0.0434836]
+  GT translation error=0.1237 m
+  GT rotation error=0.00607 rad
 ```
 
-There is also a ros2_control hardware path, but the direct standalone node is
-the intended command for this setup. Do not accidentally start both and
-publish duplicate `/imu/data` streams.
-
-Udev aliases intended by the setup include:
+优化后四条回环平移残差约为：
 
 ```text
-/dev/dm_imu
-/dev/ddsm
+0.290 m, 0.164 m, 0.127 m, 0.555 m
 ```
 
-Relevant installers:
+整体最大值由 run19 的 0.746 m 降到 0.555 m，说明位姿协方差修正方向正确，但第四条真边仍被 Huber 降权。
+
+run20 最终指标：
 
 ```text
-/home/sw/dev_ws/src/dm_imu/scripts/install_dm_imu_udev.sh
-/home/jetson/dev_ws/src/ddsm_driver/scripts/install_ddsm_udev.sh
+APE RMSE                         11.0376 m
+GT 对齐后最终点误差              1.2545 m
+首尾轨迹 XY 中位差               1.0238 m
+首尾轨迹 |dZ| 中位数             0.0963 m
+共享走廊 PCD 双向 overlap         93.164%
+尾段到首段 PCD NN 中位距离        0.1637 m
+PCD 匹配点 |dZ| 中位数           0.0722 m
 ```
 
-There is an unresolved Jetson boot issue: with only the DM IMU USB device
-connected before power-on, the Jetson sometimes failed to boot, while plugging
-it in after boot worked. An NVMe-first boot-order change was attempted, but the
-apparently successful boot occurred after the DM IMU had been unplugged, so the
-fix was never proven. Treat this as unresolved hardware/firmware behavior, not
-as a ROS software bug.
-
-## 13. Xbox Teleoperation
-
-The Xbox One controller package lives on Jetson in:
+这是目前最好的、可解释的完整结果。最终 PCD：
 
 ```text
-/home/jetson/dev_ws/src/xbox_teleop
+log/large_loop_cartographer_sequence_20260817_run20_pose_covariance/map/large_loop_cartographer_rolling_final.pcd
+SHA256 07eead910a06f02dbdd2a462d8d42a28440dab3f00c37db36b9cb648409e7fd8
 ```
 
-USB Bluetooth was preferred over onboard Bluetooth for signal quality. The
-controller enable/deadman button for the tested configuration is **Y**, not RB.
+关键产物：
 
-System services were installed for reconnection and ROS teleop:
+- `log/large_loop_cartographer_sequence_20260817_run20_pose_covariance/shared_corridor_comparison.json`
+- `log/large_loop_cartographer_sequence_20260817_run20_pose_covariance/shared_corridor_comparison.png`
+- `log/large_loop_cartographer_sequence_20260817_run20_pose_covariance/local_vertical_windows.png`
+- `log/large_loop_cartographer_sequence_20260817_run20_pose_covariance/loop_pose_vs_gt.json`
+- `log/large_loop_cartographer_sequence_20260817_run20_pose_covariance/backend_comparison.json`
+- `log/large_loop_cartographer_sequence_20260817_run20_pose_covariance/point_lio.log`
+
+### run21：不能用于验证 Huber 3.0
+
+目录：
 
 ```text
-xbox-controller-autoconnect.service
-xbox-teleop-ros.service
+log/large_loop_cartographer_sequence_20260817_run21_loop_huber3
 ```
 
-The teleop node publishes `TwistStamped` directly to `/cmd_vel`. Nav2's velocity
-smoother also publishes to `/cmd_vel`. There is currently no command mux.
+原会话在 run21 回放进行到约 266/601 秒时因 Codex 响应流断开。实验进程随后自行完整退出，最终 PCD 和轨迹均保存成功；不是 SLAM 进程崩溃。
 
-Therefore stop Xbox teleop before Nav2 controls the base:
-
-```bash
-sudo systemctl stop xbox-teleop-ros.service
-```
-
-After stopping Nav2, restore teleop with:
-
-```bash
-sudo systemctl start xbox-teleop-ros.service
-```
-
-Do not leave both publishers active. Add a proper twist mux / priority arbiter
-before expecting seamless manual override during autonomous navigation.
-
-## 14. Simulation Commands
-
-The shell startup already sources the Lyrical, Nav2, MoveIt, AdaGraph-LIO, and
-robot-sim overlays. It also defines `clean_sim`.
-
-Manual source sequence:
-
-```bash
-source /opt/ros/lyrical/setup.bash
-source /home/sw/nav2_ws/install/setup.bash
-source /home/sw/ws_moveit2/install/setup.bash
-source /home/sw/AdaGraph-LIO/install/setup.bash
-source /home/sw/robot-sim/install/setup.bash
-```
-
-House world with Super-LIO, without Nav2 or MoveIt:
-
-```bash
-ros2 launch robot_bringup full.launch.py \
-  world:=aws_house.sdf \
-  headless:=false \
-  nav2:=false \
-  super_lio:=true \
-  moveit:=false \
-  nav2_rviz:=false \
-  moveit_rviz:=false
-```
-
-House world only:
-
-```bash
-ros2 launch robot_bringup full.launch.py \
-  world:=aws_house.sdf \
-  headless:=false \
-  nav2:=false \
-  super_lio:=false \
-  moveit:=false \
-  nav2_rviz:=false \
-  moveit_rviz:=false
-```
-
-Keyboard control in simulation:
-
-```bash
-ros2 run teleop_twist_keyboard teleop_twist_keyboard \
-  --ros-args \
-  -r cmd_vel:=/base_controller/cmd_vel \
-  -p stamped:=true \
-  -p frame_id:=base_footprint
-```
-
-The current `full.launch.py` hard-codes `use_prior_map: false` for its embedded
-Super-LIO launch. For prior-map simulation, start Gazebo without Super-LIO,
-then launch `super_lio sim.py` separately as documented in
-`doc/sim_super_lio_nav2_usage.md`.
-
-Available worlds:
+但 run21 仅接受一条回环：
 
 ```text
-empty.sdf
-aws_warehouse.sdf
-aws_house.sdf
+4304 -> 104
+measurement t=[0.518227, 1.47696, 0.00912866]
+rpy=[-0.0182872, -0.0403385, 0.871794]
+GT translation error=0.4093 m
+GT rotation error=0.03695 rad
+optimized residual=0.112683 m / 0.0287864 rad
 ```
 
-Do not use `empty.sdf` for localization or navigation quality evaluation.
+其他三条没有复现：
 
-`aws_house.sdf` physics was reduced from 1000 Hz / 1 ms to 500 Hz / 2 ms to
-lower simulation CPU load. This reduces physics update cost while retaining a
-much higher rate than the 10 Hz LiDAR and ordinary mobile-base control loop.
+- `4409 -> 209` 的 graph 初始化最终 `registration_failed`；
+- `4444 -> 244` 的 BEV pose 只有 `sequence_consensus=2`，而 pose-free 路径要求 3；
+- 其余连续候选也受实时调度/前端关键帧非确定性影响，没有形成与 run20 相同的四条约束。
 
-## 15. Build and Test
+因此 run21 不是“Huber 3.0 失败”的证据，也不是有效的 run20 对照。它根本没有对同一组四条回环测量进行优化。
 
-### Development PC
+run21 指标：
+
+```text
+accepted loops                    1
+APE RMSE                          11.1514 m
+GT 对齐后最终点误差               4.7629 m
+首尾轨迹 |dZ| 中位数              0.8950 m
+共享走廊 PCD 双向 overlap          70.746%
+尾段到首段 PCD NN 中位距离         0.4390 m
+PCD 匹配点 |dZ| 中位数            0.1383 m
+```
+
+最终 PCD：
+
+```text
+log/large_loop_cartographer_sequence_20260817_run21_loop_huber3/map/large_loop_cartographer_rolling_final.pcd
+SHA256 701f8666cffa20086b4f7659cfcb3c167b798ed51d5d648f67769bba6a784c9e
+```
+
+## 下一步：必须先做受控后端对照
+
+不要立即再跑一次完整 bag 来“赌”四条边复现。当前最大干扰是 BEV/关键帧/调度非确定性，而不是缺少更多完整回放。
+
+优先实现一个后端固定约束重放测试或离线工具：
+
+1. 固定 run20 的 odometry/node 轨迹与上面四条回环测量；
+2. 使用完全相同的四条 Pose3 约束、协方差和初始化；
+3. 只切换 `loop_closure_huber_delta=1.345` 与 `3.0`；
+4. 比较每条因子的优化后平移/旋转残差、总图误差、节点位姿差；
+5. 目标是确认第四条 `4444->244` 的 0.555 m 是否能压到约 0.2–0.3 m，同时不让其他三条或里程计链异常；
+6. 把这个结果固化为回归测试，再决定是否保留 Huber 3.0；
+7. 只有受控测试成立后，再跑一次完整 large_loop 验证最终 PCD 和“双球”。
+
+如果无法直接从运行时导出完整 factor graph，可以先在测试中按真实节点数构造与 `test_isam2_optimizer.cpp` 相同的长链，并插入 run20 的四条固定回环。更好的方案是给 backend recorder 增加约束序列导出/重放，保证完整实验可重复。
+
+不要通过以下方式掩盖问题：
+
+- 降低 BEV minimum pose inliers；
+- 降低 pose-free sequence consensus；
+- 放宽 VGICP fitness/correspondence distance；
+- 忽略 `hasConverged`；
+- 恢复 raw keyframe 或 `submap_pair` 兜底；
+- 仅凭单条回环残差或 APE 宣称成功。
+
+## 常用分析命令/脚本
+
+完整实验脚本：
 
 ```bash
 cd /home/sw/AdaGraph-LIO
-source /opt/ros/lyrical/setup.bash
-colcon build --packages-select livox_ros_driver2 basic super_lio
-colcon test --packages-select basic super_lio
-colcon test-result --test-result-base build/super_lio --verbose
+setsid /home/sw/AdaGraph-LIO/scripts/run_large_loop_experiment.sh \
+  /home/sw/AdaGraph-LIO/log/large_loop_cartographer_sequence_YYYYMMDD_runXX_name \
+  > /tmp/adagraph_runXX_launcher.log 2>&1 &
 ```
 
-Last test records:
+分析脚本：
 
-- Ultra review/fixup: 54 tests, 0 failures, documented in
-  `doc/ultra_review_fix_report.md`.
-- Adaptive KISS / strict VGICP follow-up: scoped Super-LIO result was
-  26 tests, 0 failures.
-- An unscoped `colcon test-result --verbose` also showed stale unrelated
-  Livox lint output. Use package-scoped test result bases before diagnosing a
-  regression.
+- `scripts/compare_loop_pose_to_gt.py`
+- `scripts/analyze_backend_loop_trajectory.py`
+- `scripts/compare_endpoint_loop_maps.py`
+- `scripts/plot_endpoint_local_windows.py`
+- `scripts/analyze_registration_debug.py`
 
-Paper-sequence evaluation is documented in
-`doc/super_lio_paper_dataset_evaluation.md`:
-
-```text
-M2DGR door_01: repaired RMSE 0.454238 m, original 0.463061 m
-M2DGR door_02: repaired RMSE 0.342372 m, original 0.346973 m
-```
-
-### Jetson
-
-Never copy x86 `build/`, `install/`, or `log/` directories to Jetson.
+检查回环和后端最终状态：
 
 ```bash
-cd /home/jetson/AdaGraph-LIO
-source /opt/ros/jazzy/setup.bash
-BUILD_JOBS=2 ./scripts/build_jetson.sh
-source install/setup.bash
+rg -n '\[LoopClosure\]: accepted|loop factor residuals|ERROR|FATAL' \
+  log/<run>/point_lio.log
 ```
 
-Stable tagged deployment:
+检查实验是否完整保存：
 
 ```bash
-BUILD_JOBS=2 ./scripts/deploy_jetson_version.sh jetson-vX.Y.Z
+rg -n 'MapSaveScheduler|submitted/processed/failed' log/<run>/point_lio.log
+find log/<run>/map -maxdepth 1 -type f -printf '%s %p\n'
 ```
 
-See `doc/jetson_development_and_deployment.md` for rollback behavior.
+## 原会话记录
 
-## 16. What Is Complete
-
-- Super-LIO publishes standard Nav2 odom TF.
-- Prior-map localization is integrated into the Super-LIO node.
-- FastVGICP is isolated on a worker thread.
-- `map -> odom` is computed without resetting ESKF.
-- KISS startup / LOST / manual recovery path exists.
-- KISS ratio-test candidate adaptation and VGICP verification are implemented
-  in the current worktree.
-- Real Mid-360 upside-down installation and base offsets are represented.
-- Livox CustomMsg and PointCloud2 input paths exist.
-- Ground segmentation and occupancy grid publishing are integrated.
-- Nav2 RPP configuration uses the full chassis footprint and `TwistStamped`.
-- Real wheel geometry is known and represented in `ddsm_robot_current.yaml`.
-- DDSM yaw PI auto tuning and persistence exist.
-- Xbox teleoperation and reconnect services exist.
-- Simulation supports house / warehouse, Super-LIO, Nav2, and MoveIt.
-- Jetson build/deploy scripts and a private Git remote exist.
-
-## 17. What Is Not Complete
-
-Priorities for the next session:
-
-1. **Validate Point-LIO on the active real robot.** Record same-location
-   startup, arbitrary-start startup, intentional LOST/recovery, manual trigger,
-   and false-positive rejection with configuration, map checksum, candidate and
-   verifier diagnostics, `map -> odom`, RSS, CPU, and queue metrics.
-2. **Improve arbitrary-start global localization if that evidence fails.** KISS
-   against a merged PCD
-   is not yet reliable enough. Do not relax `initial_max_fitness` to hide this.
-   Use a descriptor/keyframe place-recognition path such as Scan Context for
-   candidate retrieval if strict registration alone cannot make startup robust.
-3. **Run the new mapping-time Nav2 grid artifact on the real robot.** Enable
-   `lio.occupancy_grid.source: online`, set
-   `lio.occupancy_grid.artifact.enable: true` and give
-   `lio.occupancy_grid.artifact.yaml_path` an absolute path in the new map
-   directory. The writer is format-tested against Nav2 `map_server`, but
-   online update/lock/RSS long-run behavior still needs a representative run.
-4. **Perform an actual closed-loop Nav2 drive in an observed safe area.** The last test proved planning,
-   TF, costmaps, and command wiring, but did not send a NavigateToPose goal.
-5. **Fix the one-command real launch.** Remove the duplicate `/map` source and
-   stale default map path.
-6. **Add a command mux.** Xbox teleop and Nav2 currently cannot safely coexist.
-7. **Validate DDSM at higher angular speed.** The PI gains were tuned at low
-   yaw rate; high-speed behavior and tail swing still need a controlled test.
-8. **Visually inspect and quantify the latest grid.** Check wall alignment,
-   free-space connectivity, and whether LIO/map irregularity is from sparse
-   observations, drift, or grid projection.
-9. **Resolve the DM IMU boot interaction.** Confirm boot order with the IMU
-   continuously connected before claiming NVMe-first solved it.
-10. **Put robot-sim under real version control.** It currently has no commits.
-11. **Mechanical arm work remains.** Navigation is far along, but arm hardware,
-    MoveIt calibration, grasping, and task-level behavior are separate unfinished
-    workstreams.
-12. **Finish Point-LIO memory convergence before retiring Super-LIO.** The
-    current local-history compaction is validated on `room_01`:
-    retained history fell from `13,016,832 B` to `288,064 B`; default-allocator
-    peak RSS fell from `212,748 KiB` to `171,696 KiB` with APE `0.382443 m`.
-    The manifest now guards this workload at `180 MiB` RSS / `512 KiB` history.
-    `MALLOC_ARENA_MAX=1` measured `153,068 KiB` but is only an allocator
-    candidate pending target-device validation. Normal Point-LIO is currently
-    `150,952 KiB` maximum RSS, under its `160 MiB` anti-regression budget but
-    still above the `140 MiB` retirement target; the normal allocator candidate
-    experiment reaches `144,196 KiB`, still about `0.8 MiB` high. Next profile
-    large-map `MapManager` KeyFrame/Submap retention; do not release KeyFrame
-    clouds without a replacement for Snapshot/map-save/occupancy.
-    Super-LIO remains a regression baseline until Point-LIO meets the
-    documented RSS, accuracy, recovery and real-robot retirement gates.
-13. **Do not enable AdaGraph absolute localization factors on the real robot
-    yet.** `lio.backend.use_localization_factor` and
-    `lio.backend.drive_map_to_odom` remain experimental and default false.
-14. **Keep the clean package installation check in the release workflow.** On
-    `b10d8eb`, independently configured `basic` and `super_lio` clean trees
-    passed CTest `2/2` and `16/16`, respectively, and installed exactly
-    `point_lio_node`, `super_lio_node`, and `adagraph_dataset_runner`. An
-    earlier install failure was only an interrupted full build before
-    `point_lio_node` linked; the declared target built and installed cleanly
-    with no source or CMake change.
-
-## 18. New Session Startup Checklist
-
-Give the next coding session this instruction:
+完整 Codex JSONL（约 51.2 MB、6288 条记录）：
 
 ```text
-Read /home/sw/AdaGraph-LIO/HANDOFF.md first. Then inspect git status and the
-latest architecture commit before editing. Treat main@2a2850e as the
-pre-refactor baseline. Read all four files under `doc/architecture/` before
-changing a boundary. Before real-robot work, use the active AidLux X1 target
-and re-check live ROS nodes, TF, wheel_separation, map source, and `/cmd_vel`
-publishers. Never start duplicate Livox, Point-LIO/Super-LIO, map-server,
-odom-TF, or cmd_vel publishers.
+/home/sw/.codex/sessions/2026/08/17/rollout-2026-08-17T12-50-50-01a00e0e-df6a-7863-b8cf-8352dca8ad90.jsonl
 ```
 
-First commands:
+该会话中间多次发生 `stream disconnected before completion`。不要把这些 Codex 连接错误误判成构建、ROS 或 SLAM 进程失败；以实验目录里的日志和最终文件为准。
 
-```bash
-cd /home/sw/AdaGraph-LIO
-git status --short --branch
-git diff --check
-git diff --stat
-sed -n '1,260p' HANDOFF.md
-```
+## 当前结论
 
-Before moving the real robot:
+子图构建和 3D 几何验证已经从“明显错误/不可靠”改善到可用：run20 的四条边可由 GT 解释，最终共享走廊 PCD overlap 达 93.16%，Z 分层和大范围重影显著收敛。
 
-```bash
-ros2 node list
-ros2 topic info /cmd_vel -v
-ros2 param get /ddsm_driver_node wheel_separation
-ros2 run tf2_ros tf2_echo odom base_footprint
-ros2 run tf2_ros tf2_echo map odom
-ros2 topic echo /map --once --field info
-```
-
-Expected safety invariants:
-
-```text
-one odom -> base_footprint publisher
-one map -> odom publisher
-one /map owner
-one active /cmd_vel publisher
-wheel_separation = 0.395
-map -> odom -> base_footprint available before Nav2 activation
-```
-
-## 19. Detailed Documents
-
-- `doc/sim_super_lio_nav2_usage.md`: simulation, mapping, prior-map loading,
-  Nav2 commands, TF debugging.
-- `doc/jetson_development_and_deployment.md`: ARM64 build, tags, deployment,
-  rollback.
-- `doc/ultra_review_fix_report.md`: complete Fable5/Ultra finding-to-fix map,
-  residual risks, and tests.
-- `doc/super_lio_paper_dataset_evaluation.md`: M2DGR reproduction and original
-  versus repaired accuracy.
-- `doc/livox_mid360_pointcloud2.md`: real PointCloud2 integration.
-- `doc/adagraph_lio_project_proposal.md`: competition-project AdaGraph-LIO
-  technical narrative.
-- `README.md`: project overview and build entry points.
-
-## 20. X1 Deployment
-
-The active ARM64 target is now the AidLux X1:
-
-```text
-SSH alias: aidlux
-management address: 192.168.1.166
-user/home: aidlux / /home/aidlux
-ROS: Humble
-LiDAR bridge: br-lan, 192.168.5.5/24
-Mid-360 address: 192.168.5.170
-```
-
-Deployed workspaces and maps:
-
-```text
-/home/aidlux/AdaGraph-LIO
-/home/aidlux/DDSM_Driver_ros2
-/home/aidlux/nav2_ws
-/home/aidlux/robot_ws
-/home/aidlux/maps/real_20260728_213413
-```
-
-`robot_ws` contains `dm_imu`, `xbox_teleop`, and `robot_nav2_bringup`.
-The DM-IMU package intentionally contains only the standalone serial node;
-its ros2_control hardware plugin and controller launch path were removed.
-Stable serial aliases are `/dev/ddsm` and `/dev/dm_imu`. The `aidlux` user is
-in the `dialout` and `input` groups.
-
-Xbox auto-connect and teleoperation are enabled as system services:
-
-```bash
-systemctl status xbox-controller-autoconnect.service
-systemctl status xbox-teleop-ros.service
-```
-
-Real-system launch:
-
-```bash
-ros2 launch robot_nav2_bringup real_system.launch.py \
-  map_dir:=/home/aidlux/maps/real_20260728_213413 rviz:=false
-```
-
-The X1 smoke test loaded the PCD with FastVGICP, loaded the Nav2 PGM/YAML,
-and created the RPP/Navfn/behavior plugins. Without live LiDAR packets it
-correctly waits for `odom -> base_footprint`, so full lifecycle activation
-must be verified once the Mid-360 is connected.
-
-MoveIt planning assets are also installed in `robot_ws`:
-
-```text
-so101_sim
-robot_description
-robot_moveit_config
-```
-
-The X1 uses the Humble-compatible OMPL adapter format and defaults
-`use_sim_time` to `false`. A smoke test reached `You can start planning now!`.
-Gazebo worlds are intentionally kept on the development computer. The current
-MoveIt controller names still require a real SO-101 hardware driver before
-trajectory execution can move either arm.
+尚未完全解决的是严格真回环在 iSAM2 中的最终执行残差，以及由此在球体、护栏等清晰局部结构上留下的约 0.1–0.5 m 双轮廓。当前最需要的是固定四条回环的受控后端实验，而不是继续调前端阈值或重复非确定性完整回放。

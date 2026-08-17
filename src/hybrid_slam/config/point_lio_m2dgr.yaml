@@ -1,0 +1,124 @@
+/**:
+  ros__parameters:
+    # M2DGR: Velodyne VLP-32C + Handsfree A9 IMU.
+    lidar_topic: "/velodyne_points"
+    imu_topic: "/handsfree/imu"
+    lidar_type: "velodyne_pointcloud2"
+    lidar_frame: "velodyne"
+    save_pcd: false
+
+    # Offline bags can burst while the executor catches up. Reliable, deep
+    # input queues prevent the estimator event stream from changing between
+    # repeated replays. HybridSLAM/mapping run on a separate bounded worker.
+    point_lio.input.reliable: true
+    point_lio.input.lidar_queue_depth: 128
+    point_lio.input.imu_queue_depth: 4000
+    point_lio.backend.queue_capacity: 16
+
+    # Small Point-LIO frontend.
+    point_filter_num: 1
+    min_distance: 1.0
+    max_distance: 100.0
+    space_downsample: true
+    # 0.2 m retained all source frames at 5x replay and improved room_01 APE;
+    # 0.15 m was measurably slower and could not drain point updates at 5x.
+    space_downsample_leaf_size: 0.2
+
+    gravity: [0.0, 0.0, -9.805]
+    fix_gravity_direction: true
+    check_satu: true
+    satu_acc: 30.0
+    satu_gyro: 35.0
+    # M2DGR sensor_msgs/Imu acceleration is already in m/s^2.
+    acc_norm: 9.805
+
+    map_resolution: 0.2
+    init_map_size: 100
+
+    extrinsic_est_en: false
+    # Official M2DGR lidar -> Handsfree IMU calibration.
+    extrinsic_T: [0.27255, -0.00053, 0.17954]
+    extrinsic_R: [1.0, 0.0, 0.0,
+                  0.0, 1.0, 0.0,
+                  0.0, 0.0, 1.0]
+
+    laser_point_cov: 0.01
+    imu_meas_acc_cov: 0.01
+    imu_meas_omg_cov: 0.01
+    velocity_cov: 20.0
+    acceleration_cov: 500.0
+    omg_cov: 1000.0
+    ba_cov: 0.0001
+    bg_cov: 0.0001
+    plane_threshold: 0.1
+    match_sqaured: 81.0
+    # Let Point-LIO expose point-level states, but bound ROS/Nav2 output below.
+    publish_odometry_without_downsample: true
+
+    # Shared HybridSLAM output/backend settings for offline evaluation.
+    lio.map.save_map: false
+    lio.map.save_map_dir: "map"
+    lio.map.map_name: "map.pcd"
+    lio.map.ds_size: 0.2
+    lio.extrinsic.odom_robo: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    lio.output.robot: false
+    lio.output.map: false
+    lio.output.pub_step: 1
+    lio.output.grid_update_step: 10
+    lio.backend.keyframe_max_points: 50000
+    lio.frontend_health.enable: false
+    lio.frontend_health.suspect_bad_frames: 3
+    lio.frontend_health.lost_bad_frames: 10
+    lio.frontend_health.recover_good_frames: 5
+    lio.frontend_health.verification_grace_frames: 4
+    lio.frontend_health.recovery_cooldown_frames: 20
+    lio.frontend_health.min_inlier_ratio: 0.30
+    lio.frontend_health.max_condition_number: 10000.0
+    lio.frontend_health.max_timestamp_gap_s: 1.0
+    lio.frontend_health.lidar_dropout_lost_timeout_s: 2.0
+    lio.frontend_health.min_effective_rank: 4
+    lio.frontend_health.min_effective_points: 50
+    lio.submap_recovery.enable: false
+    lio.submap_recovery.query_window_frames: 4
+    lio.submap_recovery.neighbor_submaps: 1
+    lio.submap_recovery.map_odom_prior_max_age_seconds: 10.0
+    lio.submap_recovery.kiss_voxel_size: 0.2
+    lio.submap_recovery.kiss_min_initial_matches: 12
+    lio.submap_recovery.kiss_min_rotation_inliers: 8
+    lio.submap_recovery.kiss_min_final_inliers: 5
+    lio.submap_recovery.kiss_adaptive_ratio_test: false
+    lio.submap_recovery.kiss_multi_scale: true
+    lio.submap_recovery.kiss_coarse_voxel_scale: 1.5
+    lio.submap_recovery.kiss_max_candidates: 4
+    lio.submap_recovery.minimum_inlier_ratio: 0.20
+    lio.submap_recovery.minimum_overlap: 0.10
+    lio.loop_closure.enable: false
+    lio.loop_closure.maximum_candidates: 5
+    lio.loop_closure.minimum_temporal_separation_s: 20.0
+    lio.loop_closure.minimum_inlier_ratio: 0.20
+    lio.loop_closure.minimum_overlap: 0.10
+    lio.output.path_max_poses: 20000
+    # 0 publishes every frontend state. A positive value caps /lio/odom and
+    # its associated TF/path output without changing Point-LIO fusion.
+    lio.output.odometry_rate_hz: 100.0
+    lio.output.odom_twist_filter.enable: false
+    lio.ground_robot.planar_constraint: false
+    lio.nav2_tf.enable: false
+    lio.kiss_matcher.enable: false
+    lio.kiss_matcher.voxel_size: 0.5
+    lio.kiss_matcher.use_quatro: false
+    lio.kiss_matcher.use_voxel_sampling: true
+    lio.kiss_matcher.use_ratio_test: true
+    lio.kiss_matcher.adaptive_ratio_test: false
+    lio.kiss_matcher.deterministic_voxel_sampling: true
+    lio.kiss_matcher.min_initial_matches: 12
+    lio.kiss_matcher.min_rotation_inliers: 8
+    lio.kiss_matcher.min_final_inliers: 5
+    lio.kiss_matcher.max_source_points: 30000
+    lio.kiss_matcher.max_target_points: 120000
+    lio.prior_map_localization.enable: false
+    lio.prior_map_localization.minimum_inlier_ratio: 0.20
+    lio.prior_map_localization.minimum_overlap: 0.10
+    lio.backend.use_localization_factor: false
+    lio.backend.drive_map_to_odom: false
+    lio.occupancy_grid.enable: false

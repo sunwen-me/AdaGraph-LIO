@@ -2,7 +2,6 @@
 #define DATA_STRUCTURE_H_H_
 
 
-#include "alias.h"
 #include "Manifold.h"
 
 

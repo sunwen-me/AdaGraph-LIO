@@ -13,6 +13,6 @@ src/livox_ros_driver2/.git.embedded.backup/
 *.mcap
 *.pcd
 
-src/super_lio/tmp/
+src/hybrid_slam/tmp/
 __pycache__/
 .pytest_cache/

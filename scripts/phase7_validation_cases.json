@@ -2,61 +2,11 @@
   "schema_version": 1,
   "cases": [
     {
-      "id": "m2dgr_room01_super_lio_1x_occupancy_snapshot",
-      "frontend": "super_lio",
-      "sequence": "room_01",
-      "replay_rate": 1.0,
-      "params": "src/super_lio/config/M2DGR.yaml",
-      "occupancy": {
-        "enable": true,
-        "source": "snapshot",
-        "update_policy": "lazy",
-        "topic": "/map",
-        "capture": true
-      },
-      "acceptance": {
-        "minimum_pose_count": 350,
-        "maximum_ape_rmse_m": 0.55,
-        "require_backend_chain_consistency": true,
-        "occupancy": {
-          "topic": "/map",
-          "frame_id": "world",
-          "minimum_width": 1,
-          "minimum_height": 1
-        }
-      }
-    },
-    {
-      "id": "m2dgr_room01_super_lio_1x_occupancy_online",
-      "frontend": "super_lio",
-      "sequence": "room_01",
-      "replay_rate": 1.0,
-      "params": "src/super_lio/config/M2DGR.yaml",
-      "occupancy": {
-        "enable": true,
-        "source": "online",
-        "update_policy": "lazy",
-        "topic": "/map",
-        "capture": true
-      },
-      "acceptance": {
-        "minimum_pose_count": 350,
-        "maximum_ape_rmse_m": 0.55,
-        "require_backend_chain_consistency": true,
-        "occupancy": {
-          "topic": "/map",
-          "frame_id": "world",
-          "minimum_width": 1,
-          "minimum_height": 1
-        }
-      }
-    },
-    {
       "id": "m2dgr_room01_point_lio_5x_occupancy_snapshot",
       "frontend": "point_lio",
       "sequence": "room_01",
       "replay_rate": 5.0,
-      "params": "src/super_lio/config/point_lio_m2dgr.yaml",
+      "params": "src/hybrid_slam/config/point_lio_m2dgr.yaml",
       "occupancy": {
         "enable": true,
         "source": "snapshot",
@@ -81,7 +31,7 @@
       "frontend": "point_lio",
       "sequence": "room_01",
       "replay_rate": 5.0,
-      "params": "src/super_lio/config/point_lio_m2dgr.yaml",
+      "params": "src/hybrid_slam/config/point_lio_m2dgr.yaml",
       "occupancy": {
         "enable": true,
         "source": "online",
@@ -106,7 +56,7 @@
       "frontend": "point_lio",
       "sequence": "room_01",
       "replay_rate": 5.0,
-      "params": "src/super_lio/config/point_lio_m2dgr.yaml",
+      "params": "src/hybrid_slam/config/point_lio_m2dgr.yaml",
       "node_cpu_affinity": "0,1",
       "backend": {
         "keyframe_max_frames": 1
@@ -148,85 +98,14 @@
       }
     },
     {
-      "id": "m2dgr_room01_super_lio_1x_occupancy_snapshot_budget",
-      "frontend": "super_lio",
-      "sequence": "room_01",
-      "replay_rate": 1.0,
-      "params": "src/super_lio/config/M2DGR.yaml",
-      "node_cpu_affinity": "0,1",
-      "backend": {
-        "keyframe_max_frames": 1
-      },
-      "occupancy": {
-        "enable": true,
-        "source": "snapshot",
-        "update_policy": "lazy",
-        "resolution": 0.1,
-        "max_extent": 100.0,
-        "rebuild": {
-          "max_scratch_memory_mb": 64,
-          "cancellation_check_interval": 64
-        },
-        "topic": "/map",
-        "capture": true
-      },
-      "acceptance": {
-        "minimum_pose_count": 350,
-        "maximum_ape_rmse_m": 0.55,
-        "require_backend_chain_consistency": true,
-        "occupancy": {
-          "topic": "/map",
-          "frame_id": "world",
-          "minimum_width": 1,
-          "minimum_height": 1
-        },
-        "occupancy_snapshot_rebuild": {
-          "minimum_handoffs": 200,
-          "minimum_requested": 200,
-          "minimum_completed": 200,
-          "maximum_cancelled_superseded": 0,
-          "maximum_cancelled_shutdown": 0,
-          "maximum_budget_exceeded": 0,
-          "maximum_failed": 0,
-          "maximum_peak_scratch_bytes": 16777216,
-          "minimum_configured_scratch_bytes": 67108864
-        }
-      }
-    },
-    {
-      "id": "m2dgr_room01_super_lio_1x_map_save",
-      "frontend": "super_lio",
-      "sequence": "room_01",
-      "replay_rate": 1.0,
-      "params": "src/super_lio/config/M2DGR.yaml",
-      "save_map": {
-        "enable": true,
-        "map_name": "map.pcd",
-        "save_interval": 25,
-        "if_filter": true,
-        "ds_size": 0.3
-      },
-      "acceptance": {
-        "minimum_pose_count": 350,
-        "maximum_ape_rmse_m": 0.55,
-        "require_backend_chain_consistency": true,
-        "pcd": {
-          "minimum_files": 2,
-          "minimum_points": 1
-        }
-      }
-    },
-    {
       "id": "m2dgr_room01_point_lio_5x_map_save",
       "frontend": "point_lio",
       "sequence": "room_01",
       "replay_rate": 5.0,
-      "params": "src/super_lio/config/point_lio_m2dgr.yaml",
+      "params": "src/hybrid_slam/config/point_lio_m2dgr.yaml",
       "save_map": {
         "enable": true,
         "map_name": "map.pcd",
-        "save_interval": 0,
-        "if_filter": false,
         "ds_size": 0.3
       },
       "acceptance": {
@@ -237,26 +116,6 @@
           "minimum_files": 2,
           "minimum_points": 1
         }
-      }
-    },
-    {
-      "id": "m2dgr_room01_super_lio_1x_prior_map",
-      "frontend": "super_lio",
-      "sequence": "room_01",
-      "replay_rate": 1.0,
-      "params": "src/super_lio/config/M2DGR.yaml",
-      "prior_map_file": "src/super_lio/tmp/adagraph_test/room_map.pcd",
-      "acceptance": {
-        "minimum_pose_count": 350,
-        "maximum_ape_rmse_m": 0.70,
-        "require_backend_chain_consistency": true,
-        "require_global_alignment_consistency": true,
-        "maximum_ros_alignment_translation_delta_m": 1.0e-6,
-        "maximum_ros_alignment_rotation_delta_rad": 1.0e-8,
-        "require_relocalization_scheduler": true,
-        "minimum_relocalization_submitted": 1,
-        "minimum_relocalization_completed": 1,
-        "minimum_relocalization_published": 1
       }
     },
     {
@@ -264,15 +123,15 @@
       "frontend": "point_lio",
       "sequence": "room_01",
       "replay_rate": 5.0,
-      "params": "src/super_lio/config/point_lio_m2dgr.yaml",
-      "prior_map_file": "src/super_lio/tmp/adagraph_test/room_map.pcd",
+      "params": "src/hybrid_slam/config/point_lio_m2dgr.yaml",
+      "prior_map_file": "src/hybrid_slam/tmp/adagraph_test/room_map.pcd",
       "acceptance": {
         "minimum_pose_count": 600,
         "maximum_ape_rmse_m": 0.70,
         "require_backend_chain_consistency": true,
         "require_global_alignment_consistency": true,
-        "maximum_ros_alignment_translation_delta_m": 1.0e-6,
-        "maximum_ros_alignment_rotation_delta_rad": 1.0e-8,
+        "maximum_ros_alignment_translation_delta_m": 0.0000010,
+        "maximum_ros_alignment_rotation_delta_rad": 1.0E-8,
         "require_relocalization_scheduler": true,
         "minimum_relocalization_submitted": 1,
         "minimum_relocalization_completed": 1,

@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser = argparse.ArgumentParser(
-        description="Run named AdaGraph-LIO regression cases."
+        description="Run named HybridSLAM regression cases."
     )
     parser.add_argument(
         "cases",
@@ -114,52 +114,6 @@ def evaluate_acceptance(
                 f"{float(maximum_ape):.6f}"
             )
 
-    memory_acceptance = acceptance.get("memory")
-    if memory_acceptance is not None:
-        if not isinstance(memory_acceptance, dict):
-            failures.append("memory acceptance field is not an object")
-        else:
-            resources = summary.get("resources", {})
-            diagnostics = summary.get("diagnostics", {})
-            if not isinstance(resources, dict):
-                resources = {}
-            if not isinstance(diagnostics, dict):
-                diagnostics = {}
-
-            maximum_rss_kib = memory_acceptance.get("maximum_rss_kib")
-            if maximum_rss_kib is not None:
-                rss_kib = resources.get("maximum_resident_set_kib")
-                if rss_kib is None:
-                    failures.append("maximum resident-set diagnostic is missing")
-                elif int(rss_kib) > int(maximum_rss_kib):
-                    failures.append(
-                        f"maximum RSS {rss_kib} KiB > budget "
-                        f"{maximum_rss_kib} KiB"
-                    )
-
-            maximum_local_history_backing_bytes = memory_acceptance.get(
-                "maximum_local_history_backing_bytes"
-            )
-            if maximum_local_history_backing_bytes is not None:
-                prior_map_memory = diagnostics.get("prior_map_memory", {})
-                if not isinstance(prior_map_memory, dict):
-                    prior_map_memory = {}
-                local_history_bytes = prior_map_memory.get(
-                    "local_frame_backing_bytes"
-                )
-                if local_history_bytes is None:
-                    failures.append(
-                        "prior-map local-history memory diagnostic is missing"
-                    )
-                elif int(local_history_bytes) > int(
-                    maximum_local_history_backing_bytes
-                ):
-                    failures.append(
-                        "prior-map local-history backing "
-                        f"{local_history_bytes} B > budget "
-                        f"{maximum_local_history_backing_bytes} B"
-                    )
-
     if acceptance.get("require_backend_chain_consistency", False):
         diagnostics = summary.get("diagnostics", {})
         scheduler = (
@@ -197,7 +151,7 @@ def evaluate_acceptance(
             )
             if keyframe_count != node_count:
                 failures.append(
-                    f"legacy keyframes {keyframe_count} != graph nodes {node_count}"
+                    f"keyframes {keyframe_count} != graph nodes {node_count}"
                 )
             snapshot_version = int(
                 scheduler.get("map_snapshot_version", -1)
@@ -680,14 +634,6 @@ def evaluate_acceptance(
                     f"{minimum_snapshot_version}"
                 )
 
-    if acceptance.get("forbid_legacy_backend_execution", False):
-        # summarize_tum records this negative execution assertion from the
-        # actual node log; require explicit false evidence for this gate.
-        if summary.get("diagnostics", {}).get("legacy_backend_execution", False):
-            failures.append("legacy AdaGraph backend execution marker was found")
-        elif "legacy_backend_execution" not in summary.get("diagnostics", {}):
-            failures.append("legacy backend execution evidence is missing")
-
     return failures
 
 
@@ -706,8 +652,7 @@ def run_case(
         str(case_output),
     ]
     environment = os.environ.copy()
-    environment["SUPER_LIO_ROOT"] = str(repo_root)
-    environment["FRONTEND"] = str(case["frontend"])
+    environment["HYBRID_SLAM_ROOT"] = str(repo_root)
     environment["PARAMS_FILE"] = str(params)
 
     occupancy = case.get("occupancy")
@@ -769,8 +714,6 @@ def run_case(
         environment["SAVE_MAP_DIR"] = str((case_output / "map").resolve())
         for field, variable in (
             ("map_name", "MAP_NAME"),
-            ("save_interval", "MAP_SAVE_INTERVAL"),
-            ("if_filter", "MAP_IF_FILTER"),
             ("ds_size", "MAP_DS_SIZE"),
         ):
             if field in save_map:

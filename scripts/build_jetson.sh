@@ -38,7 +38,7 @@ fi
 export CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS}"
 
 colcon build \
-  --packages-up-to super_lio \
+  --packages-up-to hybrid_slam \
   --executor sequential \
   --symlink-install \
   "$@" \

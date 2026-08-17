@@ -1,0 +1,76 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: Optimized Global Map
+      Size (m): 0.03
+      Style: Points
+      Topic:
+        Value: /lio/global_map
+      QoS Durability Policy: Transient Local
+      QoS History Policy: Keep Last
+      QoS Reliability Policy: Reliable
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: false
+      Name: Point-LIO Local Cloud
+      Size (m): 0.03
+      Style: Points
+      Topic:
+        Value: /lio/cloud_world
+    - Class: rviz_default_plugins/Path
+      Color: 25; 255; 0
+      Enabled: true
+      Name: Path
+      Topic:
+        Value: /lio/path
+    - Class: rviz_default_plugins/Odometry
+      Enabled: true
+      Name: Point-LIO Odometry
+      Topic:
+        Value: /lio/odom
+    - Class: rviz_default_plugins/Map
+      Enabled: true
+      Name: Occupancy Grid
+      Topic:
+        Value: /map
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 30
+      Name: Current View
+      Pitch: 0.785
+      Target Frame: <Fixed Frame>
+      Yaw: 0.785

@@ -101,9 +101,6 @@ def parse_resource_usage(path: Optional[Path]) -> Dict[str, object]:
 
     result: Dict[str, object] = {}
     patterns = {
-        "maximum_resident_set_kib": re.compile(
-            r"^\s*Maximum resident set size \(kbytes\):\s*(\d+)\s*$"
-        ),
         "user_cpu_seconds": re.compile(
             r"^\s*User time \(seconds\):\s*([-+0-9.eE]+)\s*$"
         ),
@@ -119,9 +116,7 @@ def parse_resource_usage(path: Optional[Path]) -> Dict[str, object]:
             match = pattern.match(line)
             if not match:
                 continue
-            if key == "maximum_resident_set_kib":
-                result[key] = int(match.group(1))
-            elif key == "cpu_percent":
+            if key == "cpu_percent":
                 result[key] = match.group(1)
             else:
                 result[key] = float(match.group(1))
@@ -135,13 +130,6 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
     text = path.read_text(encoding="utf-8", errors="replace")
     diagnostics: Dict[str, object] = {}
 
-    # The standard compositions must use the typed BackendScheduler.  Keep a
-    # machine-readable negative assertion in the summary so a regression case
-    # can fail if a compatibility AdaGraph facade is accidentally reintroduced.
-    diagnostics["legacy_backend_execution"] = bool(
-        re.search(r"(?:adagraph_backend\.cpp|\[AdaGraph\])", text)
-    )
-
     keyframes = [int(value) for value in re.findall(r"Keyframe\s+(\d+)", text)]
     if keyframes:
         diagnostics["keyframe_count"] = max(keyframes)
@@ -150,10 +138,7 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
         r"accepted_keyframes=(\d+)", text
     )
     if accepted_keyframe_matches:
-        # The typed scheduler remains authoritative even when the legacy
-        # AdaGraph graph is disabled and therefore emits no "Keyframe N"
-        # lines.  Prefer the explicit accepted count when both diagnostics
-        # styles are present during the compatibility transition.
+        # Prefer the explicit accepted count to optional per-keyframe logs.
         diagnostics["keyframe_count"] = int(accepted_keyframe_matches[-1])
 
     point_pattern = re.compile(
@@ -208,22 +193,6 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
             "glibc_retained_bytes": int(match.group(3)),
         }
 
-    super_downstream_pattern = re.compile(
-        r"Super-LIO downstream enqueued/processed=(\d+)/(\d+),\s*"
-        r"max_queue=(\d+),\s*backpressure_waits=(\d+),\s*"
-        r"mean=([-+0-9.eE]+)\s*ms"
-    )
-    super_downstream_matches = list(super_downstream_pattern.finditer(text))
-    if super_downstream_matches:
-        match = super_downstream_matches[-1]
-        diagnostics["super_lio_downstream"] = {
-            "downstream_enqueued": int(match.group(1)),
-            "downstream_processed": int(match.group(2)),
-            "downstream_max_queue_depth": int(match.group(3)),
-            "backpressure_wait_count": int(match.group(4)),
-            "downstream_mean_ms": float(match.group(5)),
-        }
-
     backend_scheduler_pattern = re.compile(
         r"\[BackendScheduler\]:\s*enqueued/processed/failed="
         r"(\d+)/(\d+)/(\d+),\s*nodes/constraints=(\d+)/(\d+),\s*"
@@ -231,8 +200,12 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
         r"optimizer updates/failures=(\d+)/(\d+),\s*"
         r"optimizer max pose delta=([-+0-9.eE]+)\s*m/"
         r"([-+0-9.eE]+)\s*rad,\s*global_constraints_dropped=(\d+),\s*"
+        r"(?:relocalization_constraints enqueued/processed/dropped="
+        r"(\d+)/(\d+)/(\d+),\s*)?"
         r"map_snapshot_version=(\d+),\s*submaps/finished=(\d+)/(\d+),\s*"
         r"accepted_keyframes=(\d+),\s*snapshot_observer_failures=(\d+)"
+        r"(?:,\s*evaluation_drift constraints/distance/yaw="
+        r"(\d+)/([-+0-9.eE]+)\s*m/([-+0-9.eE]+)\s*rad)?"
     )
     backend_scheduler_matches = list(
         backend_scheduler_pattern.finditer(text)
@@ -252,12 +225,30 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
             "maximum_optimizer_translation_delta_m": float(match.group(10)),
             "maximum_optimizer_rotation_delta_rad": float(match.group(11)),
             "global_constraints_dropped": int(match.group(12)),
-            "map_snapshot_version": int(match.group(13)),
-            "submap_count": int(match.group(14)),
-            "finished_submap_count": int(match.group(15)),
-            "accepted_keyframes": int(match.group(16)),
-            "snapshot_observer_failures": int(match.group(17)),
+            "map_snapshot_version": int(match.group(16)),
+            "submap_count": int(match.group(17)),
+            "finished_submap_count": int(match.group(18)),
+            "accepted_keyframes": int(match.group(19)),
+            "snapshot_observer_failures": int(match.group(20)),
         }
+        if match.group(13) is not None:
+            diagnostics["backend_scheduler"].update(
+                {
+                    "relocalization_constraints_enqueued": int(match.group(13)),
+                    "relocalization_constraints_processed": int(match.group(14)),
+                    "relocalization_constraints_dropped": int(match.group(15)),
+                }
+            )
+        if match.group(21) is not None:
+            diagnostics["backend_scheduler"].update(
+                {
+                    "evaluation_drifted_odometry_constraints": int(
+                        match.group(21)
+                    ),
+                    "evaluation_drifted_distance_m": float(match.group(22)),
+                    "evaluation_drifted_yaw_rad": float(match.group(23)),
+                }
+            )
 
     backend_memory_pattern = re.compile(
         r"\[BackendScheduler\]:[^\n]*"
@@ -276,7 +267,7 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
 
     global_alignment_pattern = re.compile(
         r"\[GlobalAlignmentState\]:\s*version=(\d+),\s*"
-        r"legacy parity=([-+0-9.eE]+)\s*m/([-+0-9.eE]+)\s*rad"
+        r"publication delta=([-+0-9.eE]+)\s*m/([-+0-9.eE]+)\s*rad"
     )
     global_alignment_matches = list(global_alignment_pattern.finditer(text))
     if global_alignment_matches:
@@ -302,6 +293,104 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
             "committed": int(match.group(3)),
             "rejected": int(match.group(4)),
         }
+
+    tf_pattern = re.compile(
+        r"\[PointLIOTf\]:\s*odom_base_published=(\d+),\s*"
+        r"map_odom_published=(\d+),\s*"
+        r"nonmonotonic_odom_base_stamps=(\d+),\s*"
+        r"nonmonotonic_map_odom_stamps=(\d+)"
+    )
+    tf_matches = list(tf_pattern.finditer(text))
+    if tf_matches:
+        match = tf_matches[-1]
+        diagnostics["tf_publication"] = {
+            "odom_base_published": int(match.group(1)),
+            "map_odom_published": int(match.group(2)),
+            "nonmonotonic_odom_base_stamps": int(match.group(3)),
+            "nonmonotonic_map_odom_stamps": int(match.group(4)),
+        }
+
+    recovery: Dict[str, object] = {}
+    candidate_pattern = re.compile(
+        r"Submap recovery candidate:\s*target_session=(\d+),\s*"
+        r"target_trajectory=(\d+),\s*target_submap=(\d+),\s*"
+        r"new_trajectory=(\d+),\s*query_timestamp=([-+0-9.eE]+)"
+    )
+    candidate_matches = list(candidate_pattern.finditer(text))
+    if candidate_matches:
+        match = candidate_matches[-1]
+        recovery["candidate"] = {
+            "target_session": int(match.group(1)),
+            "target_trajectory": int(match.group(2)),
+            "target_submap": int(match.group(3)),
+            "new_trajectory": int(match.group(4)),
+            "query_timestamp": float(match.group(5)),
+        }
+
+    commit_pattern = re.compile(
+        r"\[PointLIORecovery\]:\s*committed old_trajectory=(\d+),\s*"
+        r"new_trajectory=(\d+),\s*session=(\d+),\s*"
+        r"timestamp=([-+0-9.eE]+),\s*first_durable_keyframe_pending=true"
+    )
+    commit_matches = list(commit_pattern.finditer(text))
+    if commit_matches:
+        match = commit_matches[-1]
+        recovery["transaction"] = {
+            "old_trajectory": int(match.group(1)),
+            "new_trajectory": int(match.group(2)),
+            "session": int(match.group(3)),
+            "timestamp": float(match.group(4)),
+        }
+
+    reconnect_pattern = re.compile(
+        r"\[PointLIORecovery\]:\s*reconnect_constraint_enqueued\s+"
+        r"trajectory=(\d+),\s*session=(\d+),\s*timestamp=([-+0-9.eE]+)"
+    )
+    reconnect_matches = list(reconnect_pattern.finditer(text))
+    if reconnect_matches:
+        match = reconnect_matches[-1]
+        recovery["reconnect_constraint"] = {
+            "trajectory": int(match.group(1)),
+            "session": int(match.group(2)),
+            "timestamp": float(match.group(3)),
+        }
+
+    durable_pattern = re.compile(
+        r"\[PointLIORecovery\]:\s*first_durable_keyframe=(\d+),\s*"
+        r"trajectory=(\d+),\s*session=(\d+),\s*timestamp=([-+0-9.eE]+)"
+    )
+    durable_matches = list(durable_pattern.finditer(text))
+    if durable_matches:
+        match = durable_matches[-1]
+        recovery["first_durable_keyframe"] = {
+            "keyframe": int(match.group(1)),
+            "trajectory": int(match.group(2)),
+            "session": int(match.group(3)),
+            "timestamp": float(match.group(4)),
+        }
+
+    recovery["verification_committed"] = len(re.findall(
+        r"\[PointLIORecovery\]:\s*verification_committed", text))
+    recovery["verification_rollbacks"] = len(re.findall(
+        r"\[PointLIORecovery\]:\s*verification_rollback", text))
+
+    snapshot_pattern = re.compile(
+        r"\[PointLIORecovery\]:\s*final_snapshot old_trajectory=(\d+),\s*"
+        r"new_trajectory=(\d+),\s*old_present=(\d+),\s*"
+        r"new_present=(\d+),\s*relocalization_constraints=(\d+)"
+    )
+    snapshot_matches = list(snapshot_pattern.finditer(text))
+    if snapshot_matches:
+        match = snapshot_matches[-1]
+        recovery["final_snapshot"] = {
+            "old_trajectory": int(match.group(1)),
+            "new_trajectory": int(match.group(2)),
+            "old_present": bool(int(match.group(3))),
+            "new_present": bool(int(match.group(4))),
+            "relocalization_constraints": int(match.group(5)),
+        }
+    if any(recovery.values()):
+        diagnostics["submap_recovery"] = recovery
 
     relocalization_scheduler_pattern = re.compile(
         r"\[RelocalizationScheduler\]:\s*submitted/replaced/cancelled/"
@@ -337,6 +426,25 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
                     "end_to_end_max_ms": float(match.group(13)),
                 }
             )
+
+    loop_closure_scheduler_pattern = re.compile(
+        r"\[LoopClosureScheduler\]:\s*submitted/replaced/cancelled/"
+        r"completed/published/callback_failures="
+        r"(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)"
+    )
+    loop_closure_scheduler_matches = list(
+        loop_closure_scheduler_pattern.finditer(text)
+    )
+    if loop_closure_scheduler_matches:
+        match = loop_closure_scheduler_matches[-1]
+        diagnostics["loop_closure_scheduler"] = {
+            "submitted": int(match.group(1)),
+            "replaced_pending": int(match.group(2)),
+            "cancellation_requests": int(match.group(3)),
+            "completed": int(match.group(4)),
+            "constraints_published": int(match.group(5)),
+            "callback_failures": int(match.group(6)),
+        }
 
     prior_map_diagnostics_pattern = re.compile(
         r"\[PriorMapLocalization\]:\s*diagnostics\s+"
@@ -434,21 +542,6 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
             "max_materialized_cells": int(match.group(4)),
         }
 
-    timer_pattern = re.compile(
-        r"\[\s*\[([^\]]+)\]\s*\]\s*average time usage:\s*"
-        r"([-+0-9.eE]+)\s*ms\s*,\s*called times:\s*(\d+)\s*,\s*"
-        r"max:\s*([-+0-9.eE]+)\s*ms"
-    )
-    timers: Dict[str, object] = {}
-    for match in timer_pattern.finditer(text):
-        timers[match.group(1).strip()] = {
-            "mean_ms": float(match.group(2)),
-            "count": int(match.group(3)),
-            "max_ms": float(match.group(4)),
-        }
-    if timers:
-        diagnostics["super_lio_timers"] = timers
-
     return diagnostics
 
 
@@ -481,9 +574,11 @@ def parse_args() -> argparse.Namespace:
         description="Validate a TUM trajectory and create a regression summary."
     )
     parser.add_argument("--trajectory", required=True, type=Path)
+    parser.add_argument("--backend-trajectory", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--ground-truth", type=Path)
     parser.add_argument("--ape", type=Path)
+    parser.add_argument("--backend-ape", type=Path)
     parser.add_argument("--resource-usage", type=Path)
     parser.add_argument("--node-log", type=Path)
     parser.add_argument("--occupancy-summary", type=Path)
@@ -508,6 +603,10 @@ def main() -> None:
     args = parse_args()
     _, trajectory = parse_tum(args.trajectory)
 
+    backend_trajectory: Optional[Dict[str, object]] = None
+    if args.backend_trajectory is not None:
+        _, backend_trajectory = parse_tum(args.backend_trajectory)
+
     ground_truth: Optional[Dict[str, object]] = None
     if args.ground_truth is not None:
         _, ground_truth = parse_tum(args.ground_truth)
@@ -528,8 +627,10 @@ def main() -> None:
             "params_sha256": sha256_if_file(args.params),
         },
         "trajectory": trajectory,
+        "backend_trajectory": backend_trajectory,
         "ground_truth": ground_truth,
         "ape_translation_m": parse_ape(args.ape),
+        "backend_ape_translation_m": parse_ape(args.backend_ape),
         "resources": parse_resource_usage(args.resource_usage),
         "diagnostics": parse_node_diagnostics(args.node_log),
         "occupancy": parse_occupancy_summary(args.occupancy_summary),

@@ -1,0 +1,36 @@
+<package format="3">
+  <name>hybrid_slam</name>
+  <version>2.0.0</version>
+  <description>HybridSLAM with a Point-LIO frontend</description>
+  <maintainer email="lswang@mail.ecust.edu.cn">LS.Wang</maintainer>
+
+  <license>GPLv3</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>nav_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>livox_ros_driver2</depend>
+  <depend>basic</depend>
+  <depend>eigen</depend>
+  <depend>gtsam</depend>
+  <depend>libgoogle-glog-dev</depend>
+  <depend>tbb</depend>
+
+  <!-- launch files start rviz2 by default (rviz:=true) -->
+  <exec_depend>rviz2</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,165 @@
+/**:
+  ros__parameters:
+    # UrbanV2X onboard Velodyne HDL-32E and Xsens MTi-30 IMU.
+    lidar_topic: "/velodyne_points"
+    imu_topic: "/imu/data"
+    lidar_type: "velodyne_pointcloud2"
+    lidar_frame: "velodyne"
+    save_pcd: false
+
+    point_lio.input.reliable: true
+    point_lio.input.lidar_queue_depth: 128
+    point_lio.input.imu_queue_depth: 4000
+    point_lio.backend.queue_capacity: 16
+    # Each completed geometry contains the previous + current primary submap.
+    # A 35-keyframe primary gives a 70-keyframe rolling support with a
+    # 35-keyframe stride (50% overlap). Experiments bracketed the useful scale:
+    # 100 frames gave the best endpoint Z but spans up to 94 m, while 50 frames
+    # weakened longitudinal geometry and reduced final PCD overlap.
+    lio.backend.submap_max_keyframes: 35
+    # The loop has already passed sequence, bidirectional geometry and basin
+    # checks.  Keep Huber robustness, but do not downweight the remaining
+    # 2--3-sigma correction as aggressively as an unverified relative factor.
+    lio.backend.loop_closure_huber_delta: 3.0
+
+    point_filter_num: 1
+    min_distance: 1.0
+    max_distance: 100.0
+    space_downsample: true
+    space_downsample_leaf_size: 0.2
+
+    gravity: [0.0, 0.0, -9.805]
+    fix_gravity_direction: true
+    check_satu: true
+    satu_acc: 30.0
+    satu_gyro: 35.0
+    acc_norm: 9.805
+
+    map_resolution: 0.2
+    init_map_size: 100
+
+    # UrbanV2X official refined Velodyne -> IMU calibration.
+    extrinsic_est_en: false
+    extrinsic_T: [-0.001595, -0.022252, 0.157731]
+    extrinsic_R: [0.999394, -0.034800, 0.000902,
+                  0.034802, 0.999391, -0.002629,
+                  -0.000810, 0.002659, 0.999996]
+
+    laser_point_cov: 0.01
+    imu_meas_acc_cov: 0.01
+    imu_meas_omg_cov: 0.01
+    velocity_cov: 20.0
+    acceleration_cov: 500.0
+    omg_cov: 1000.0
+    ba_cov: 0.0001
+    bg_cov: 0.0001
+    plane_threshold: 0.1
+    match_sqaured: 81.0
+    publish_odometry_without_downsample: true
+
+    lio.map.save_map: false
+    lio.map.ds_size: 0.2
+    lio.output.robot: false
+    lio.output.map: false
+    lio.output.pub_step: 1
+    lio.output.global_map.enable: true
+    lio.output.global_map_voxel_size_m: 0.20
+    lio.output.global_map_pub_period: 10.0
+    lio.output.path_max_poses: 20000
+    lio.output.odometry_rate_hz: 100.0
+
+    lio.frontend_health.enable: false
+    lio.submap_recovery.enable: false
+    lio.loop_closure.enable: false
+    lio.loop_closure.plugin: scan_context
+    lio.loop_closure.scan_context.ring_count: 20
+    lio.loop_closure.scan_context.sector_count: 60
+    lio.loop_closure.scan_context.ring_key_candidates: 10
+    lio.loop_closure.scan_context.max_radius_m: 80.0
+    lio.loop_closure.scan_context.maximum_registration_initial_translation_m: 100.0
+    # The false 1999->699 BEV pose used only 20 RANSAC inliers; the validated
+    # 4299/4399 candidates used 53/34 respectively.
+    lio.loop_closure.bevplace2.minimum_pose_inliers: 32
+    # The false 1749->899 and 2299->349 detections were isolated, whereas the
+    # real return produced 4299->99, 4349->149 and 4399->199 on consecutive
+    # completed submaps. Appearance/coarse pose must therefore recur with the
+    # same submap stride before any 3D registration is allowed to add an edge.
+    lio.loop_closure.bevplace2.minimum_sequence_consensus: 2
+    lio.loop_closure.bevplace2.maximum_sequence_gap_submaps: 2
+    # Do not lower the 32-inlier BEV pose gate.  If two preceding submap pairs
+    # already passed it, the third descriptor-consistent pair may use the
+    # optimized graph prediction to enter strict 3D validation without a BEV
+    # pose.  Pose-free pairs never recursively extend this evidence history.
+    lio.loop_closure.bevplace2.minimum_pose_free_sequence_consensus: 3
+    # The route returns along the opposite lane. Index several raw sweeps plus
+    # the completed rolling submap so shared trees, poles and facades remain
+    # retrievable under the roughly 180-degree viewpoint reversal.
+    lio.loop_closure.bevplace2.representative_keyframes_per_submap: 3
+    lio.loop_closure.bevplace2.use_submap_geometry_descriptor: true
+    # Retrieval recall only: every additional candidate still has to pass
+    # coarse pose, joint 3D geometry, mutual correspondences and basin probes.
+    lio.loop_closure.maximum_candidates: 30
+    lio.loop_closure.max_source_points: 8000
+    lio.loop_closure.max_target_points: 20000
+    # The 4299->99 graph-initialized VGICP reached the same verified basin as
+    # BEV but exhausted 64 iterations.  Keep all geometry gates unchanged and
+    # allow the optimizer itself to reach its convergence criterion.
+    lio.loop_closure.max_registration_iterations: 128
+    lio.loop_closure.coarse_registration_voxel_size_m: 4.0
+    # Compatibility value inherited by the generic registration config.  The
+    # loop verifier logs raw FastVGICP fitness and uses it only to rank
+    # hypotheses that already pass the physical geometry gates below; this
+    # numeric threshold is deliberately not an acceptance gate.  Raw fitness is
+    # not stable for partially overlapping submaps: the verified 4409->209 edge
+    # has 0.108 m GT relative-pose error despite a raw score of 4.60.  Final
+    # acceptance uses bidirectional overlap, mutual correspondences and the
+    # metric inlier RMSE instead.
+    lio.loop_closure.max_fitness: 4.0
+    # Each finished geometry already covers the preceding + current primary
+    # submap (70 keyframes with a 35-keyframe stride). Match one rolling submap
+    # per endpoint; neighboring concatenation admits repeated-road aliases.
+    lio.loop_closure.neighbor_submaps: 0
+    # Keep more longitudinal context than the 35 m/50-frame experiment, while
+    # excluding the route tails admitted by the original 50 m crop.
+    lio.loop_closure.registration_crop_radius_m: 40.0
+    lio.loop_closure.maximum_initial_translation_m: 20.0
+    lio.loop_closure.minimum_temporal_separation_s: 60.0
+    lio.loop_closure.minimum_inlier_ratio: 0.20
+    lio.loop_closure.minimum_overlap: 0.10
+    lio.loop_closure.minimum_source_points: 1000
+    lio.loop_closure.minimum_target_points: 1000
+    lio.loop_closure.minimum_bidirectional_overlap: 0.25
+    # Rejected 1999->699 measured 0.238 mutual overlap, while the two verified
+    # end-loop candidates measured 0.354 and 0.515.
+    lio.loop_closure.minimum_mutual_inlier_ratio: 0.30
+    lio.loop_closure.maximum_bidirectional_inlier_rmse_m: 0.75
+    lio.loop_closure.minimum_support_extent_m: 15.0
+    lio.loop_closure.minimum_support_z_extent_m: 2.0
+    lio.loop_closure.minimum_support_eigenvalue_ratio: 0.0001
+    lio.loop_closure.minimum_support_voxels: 20
+    lio.loop_closure.support_voxel_size_m: 5.0
+    lio.loop_closure.maximum_coarse_translation_disagreement_m: 5.0
+    lio.loop_closure.maximum_coarse_yaw_disagreement_rad: 0.35
+    lio.loop_closure.maximum_pose_free_graph_correction_m: 3.0
+    lio.loop_closure.maximum_pose_free_graph_correction_rad: 0.15
+    lio.loop_closure.maximum_relative_z_m: 5.0
+    lio.loop_closure.maximum_relative_roll_pitch_rad: 0.35
+    lio.loop_closure.maximum_solution_disagreement_m: 1.0
+    lio.loop_closure.maximum_solution_disagreement_rad: 0.10
+    lio.loop_closure.uniqueness_probe_translation_m: 8.0
+    lio.loop_closure.minimum_uniqueness_probe_consensus: 1
+    # These are pose-level systematic-error floors, not per-point residuals.
+    # The verifier reduces bidirectional point RMSE by a conservative effective
+    # support count.  GT errors of the four run19 edges were 0.108--0.400 m and
+    # 0.0066--0.0376 rad, so 0.25 m / 0.04 rad is neither overconfident nor weak
+    # enough to leave the previous 0.7 m optimized loop residual.
+    lio.loop_closure.translation_sigma_m: 0.25
+    lio.loop_closure.rotation_sigma_rad: 0.04
+    lio.loop_closure.debug_directory: ""
+    # A verified loop updates map->odom only; Point-LIO remains the continuous
+    # odom->base estimator. Enable nav2_tf.publish_map_to_odom to publish it.
+    lio.backend.drive_map_to_odom: true
+    lio.occupancy_grid.enable: false
+    lio.nav2_tf.enable: false
+    lio.kiss_matcher.enable: false
+    lio.prior_map_localization.enable: false
