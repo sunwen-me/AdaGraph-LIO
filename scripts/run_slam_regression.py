@@ -135,9 +135,19 @@ def evaluate_acceptance(
                     "backend scheduler did not reliably drain: "
                     f"enqueued/processed/failed={enqueued}/{processed}/{failed}"
                 )
-            if node_count != enqueued:
+            # Only keyframe submissions become graph nodes. The queue also
+            # carries constraints and the shutdown FinishActiveSubmapsRequest,
+            # so comparing nodes against every enqueued item reports a failure
+            # on a healthy odometry-only run.
+            accepted_keyframes = int(scheduler.get("accepted_keyframes", -1))
+            if accepted_keyframes < 0:
                 failures.append(
-                    f"backend graph nodes {node_count} != accepted items {enqueued}"
+                    "backend scheduler diagnostics lack accepted_keyframes"
+                )
+            elif node_count != accepted_keyframes:
+                failures.append(
+                    f"backend graph nodes {node_count} != accepted keyframes "
+                    f"{accepted_keyframes}"
                 )
             if constraint_count != expected_constraints:
                 failures.append(
@@ -156,10 +166,14 @@ def evaluate_acceptance(
             snapshot_version = int(
                 scheduler.get("map_snapshot_version", -1)
             )
-            if snapshot_version != node_count:
+            # The version counts snapshot publications, not nodes, and the
+            # shutdown submap finalization publishes once more after the last
+            # keyframe. Requiring equality fails a healthy run; what actually
+            # matters is that every node reached at least one published snapshot.
+            if snapshot_version < node_count:
                 failures.append(
-                    f"map snapshot version {snapshot_version} != graph nodes "
-                    f"{node_count} for the odometry-only regression"
+                    f"map snapshot version {snapshot_version} < graph nodes "
+                    f"{node_count}: nodes never reached a published snapshot"
                 )
             submap_count = int(scheduler.get("submap_count", -1))
             finished_submap_count = int(
