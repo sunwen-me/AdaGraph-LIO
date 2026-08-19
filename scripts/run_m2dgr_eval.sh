@@ -25,6 +25,9 @@ NODE_EXECUTABLE="${ROOT_DIR}/install/hybrid_slam/lib/hybrid_slam/${NODE_NAME}"
 NODE_LOG="${OUTPUT_DIR}/point_lio.log"
 PRIOR_MAP_FILE="${PRIOR_MAP_FILE:-}"
 PRIOR_MAP_REGISTRATION_THREADS="${PRIOR_MAP_REGISTRATION_THREADS:-}"
+# Selects the node's startup lifecycle. Empty leaves the params-file value,
+# which defaults to mapping. 'localization' additionally requires a prior map.
+LIFECYCLE_MODE="${LIFECYCLE_MODE:-}"
 ENABLE_BACKEND_LOCALIZATION_FACTOR="${ENABLE_BACKEND_LOCALIZATION_FACTOR:-false}"
 BACKEND_DRIVE_MAP_TO_ODOM="${BACKEND_DRIVE_MAP_TO_ODOM:-}"
 FRONTEND_HEALTH_ENABLE="${FRONTEND_HEALTH_ENABLE:-}"
@@ -142,6 +145,26 @@ if [[ -n "${PRIOR_MAP_FILE}" ]]; then
     --runtime-override "lio.kiss_matcher.enable=true"
     --runtime-override "lio.nav2_tf.enable=true"
     --runtime-override "lio.nav2_tf.publish_map_to_odom=true"
+  )
+fi
+
+if [[ -n "${LIFECYCLE_MODE}" ]]; then
+  case "${LIFECYCLE_MODE}" in
+    mapping) ;;
+    localization)
+      if [[ -z "${PRIOR_MAP_FILE}" ]]; then
+        echo "LIFECYCLE_MODE=localization requires PRIOR_MAP_FILE" >&2
+        exit 2
+      fi
+      ;;
+    *)
+      echo "LIFECYCLE_MODE must be mapping or localization" >&2
+      exit 2
+      ;;
+  esac
+  ROS_PARAM_ARGS+=( -p "lio.lifecycle.mode:=${LIFECYCLE_MODE}" )
+  SUMMARY_OVERRIDE_ARGS+=(
+    --runtime-override "lio.lifecycle.mode=${LIFECYCLE_MODE}"
   )
 fi
 
