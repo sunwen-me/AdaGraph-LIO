@@ -63,9 +63,25 @@ def parse_tum(
     if not poses:
         raise ValueError(f"{path}: trajectory contains no poses")
 
-    path_length = 0.0
+    # Summing every consecutive sample measures estimator jitter as much as
+    # travel once odometry is published at IMU rate: on m2dgr room_01 it turns a
+    # 27.17 m ground-truth path into 37.43 m while APE stays at 0.40 m, because
+    # ~1.5 mm of per-sample noise accumulates over 6940 samples. Advancing an
+    # anchor only once the displacement from it clears a threshold lets real
+    # motion accumulate while zero-mean jitter cancels, which keeps the value
+    # comparable across publish rates. Under this filter the same ground truth
+    # moves 0.9% and the estimate lands within 5% of it.
+    minimum_step_m = 0.02
+    path_length_raw = 0.0
     for previous, current in zip(poses, poses[1:]):
-        path_length += math.dist(previous[1:4], current[1:4])
+        path_length_raw += math.dist(previous[1:4], current[1:4])
+    path_length = 0.0
+    anchor = poses[0][1:4]
+    for pose in poses[1:]:
+        step = math.dist(anchor, pose[1:4])
+        if step >= minimum_step_m:
+            path_length += step
+            anchor = pose[1:4]
 
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     summary: Dict[str, object] = {
@@ -76,6 +92,11 @@ def parse_tum(
         "timestamp_last": poses[-1][0],
         "duration_seconds": poses[-1][0] - poses[0][0],
         "path_length_m": path_length,
+        # Kept so the jitter this filter removes stays measurable instead of
+        # disappearing from the record: raw/filtered diverging sharply means the
+        # pose stream is noisy even when the filtered length looks correct.
+        "path_length_raw_m": path_length_raw,
+        "path_length_min_step_m": minimum_step_m,
         "start_position_m": list(poses[0][1:4]),
         "end_position_m": list(poses[-1][1:4]),
         "orientation_available": orientation_available,
@@ -206,7 +227,14 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
         r"max_queue=(\d+),\s*backpressure_waits=(\d+),\s*"
         r"optimizer updates/failures=(\d+)/(\d+),\s*"
         r"optimizer max pose delta=([-+0-9.eE]+)\s*m/"
-        r"([-+0-9.eE]+)\s*rad,\s*global_constraints_dropped=(\d+),\s*"
+        r"([-+0-9.eE]+)\s*rad,\s*"
+        # Loop-factor residuals were added to this line after the parser was
+        # written, which silently broke the whole match and left the backend
+        # diagnostics absent from every summary. Skipped without capturing so
+        # the positional group numbers below keep their meaning.
+        r"(?:loop factor residuals count/max_translation/max_rotation="
+        r"\d+/[-+0-9.eE]+\s*m/[-+0-9.eE]+\s*rad,\s*)?"
+        r"global_constraints_dropped=(\d+),\s*"
         r"(?:relocalization_constraints enqueued/processed/dropped="
         r"(\d+)/(\d+)/(\d+),\s*)?"
         r"map_snapshot_version=(\d+),\s*submaps/finished=(\d+)/(\d+),\s*"
