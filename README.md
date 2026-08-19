@@ -33,6 +33,35 @@ Mid-360:
 ros2 launch hybrid_slam PointLIO_mid360.py
 ```
 
+### Mid-360 Navigation Interface
+
+The Mid-360 launch owns only the SLAM side of the Nav2 interface. It does not
+start Nav2's map server, costmaps, planner, or controller.
+
+Build a PCD map and, optionally, a Nav2 YAML/PGM artifact from the online
+occupancy grid:
+
+```bash
+ros2 launch hybrid_slam PointLIO_mid360.py \
+  mode:=mapping save_map:=true save_map_dir:=/data/maps map_name:=site.pcd \
+  save_nav2_map:=true nav2_map_yaml:=/data/maps/site.yaml
+```
+
+Localize against that PCD map:
+
+```bash
+ros2 launch hybrid_slam PointLIO_mid360.py \
+  mode:=localization use_prior_map:=true \
+  prior_map_file:=/data/maps/site.pcd
+```
+
+Localization rejects a missing or relative prior-map path at launch. Before
+the first accepted registration, only `odom -> base_footprint` is published.
+Afterwards, Point-LIO continues to publish `odom -> base_footprint` and the
+prior-map tracker continuously publishes `map -> odom`. The launch defaults to
+the conservative direct tracker; backend map-to-odom feedback and prior-map
+graph factors require their explicit `enable_backend_*:=true` arguments.
+
 M2DGR:
 
 ```bash

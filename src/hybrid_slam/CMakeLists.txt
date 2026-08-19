@@ -628,6 +628,11 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/verify_core_boundaries.py
             ${CMAKE_CURRENT_SOURCE_DIR}/../..
   )
+  add_test(
+    NAME test_launch_mode_validation
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test/test_launch_mode_validation.py
+  )
 
   ament_add_gtest(test_livox_point_time test/test_livox_point_time.cpp)
   target_link_libraries(test_livox_point_time

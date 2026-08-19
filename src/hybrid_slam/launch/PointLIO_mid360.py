@@ -2,11 +2,91 @@ import os
 import launch.logging
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, LogInfo
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution
+from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _as_bool(value):
+    return value.strip().lower() in ('true', '1', 'yes', 'on')
+
+
+def _validate_slam_mode(context, *args, **kwargs):
+    del args, kwargs
+    mode_value = LaunchConfiguration('mode').perform(context)
+    mode = mode_value.strip().lower()
+    use_prior_map = _as_bool(
+        LaunchConfiguration('use_prior_map').perform(context)
+    )
+    prior_map_file = LaunchConfiguration('prior_map_file').perform(context)
+    save_nav2_map = _as_bool(
+        LaunchConfiguration('save_nav2_map').perform(context)
+    )
+    nav2_map_yaml = LaunchConfiguration('nav2_map_yaml').perform(context)
+    use_localization_factor = _as_bool(
+        LaunchConfiguration('enable_backend_localization_factor').perform(
+            context
+        )
+    )
+    save_map = _as_bool(LaunchConfiguration('save_map').perform(context))
+    save_map_dir = LaunchConfiguration('save_map_dir').perform(context)
+
+    if mode_value != mode or mode not in ('mapping', 'localization'):
+        raise RuntimeError("mode must be 'mapping' or 'localization'")
+    if mode == 'localization':
+        if not use_prior_map:
+            raise RuntimeError(
+                'mode=localization requires use_prior_map:=true'
+            )
+        if not prior_map_file or not os.path.isabs(prior_map_file):
+            raise RuntimeError(
+                'mode=localization requires an absolute prior_map_file path'
+            )
+        if not os.path.isfile(prior_map_file):
+            raise RuntimeError(
+                'mode=localization requires an existing prior_map_file'
+            )
+        if save_map:
+            # Map saving writes the live session map, never the prior. Allowing
+            # it here silently produces a second, unrelated PCD next to the
+            # prior map the run was localizing against.
+            raise RuntimeError(
+                'save_map is only valid in mapping mode; localization does '
+                'not modify or re-save the prior map'
+            )
+    if use_localization_factor and not use_prior_map:
+        raise RuntimeError(
+            'enable_backend_localization_factor:=true requires '
+            'use_prior_map:=true'
+        )
+    if save_nav2_map:
+        if mode != 'mapping':
+            raise RuntimeError('save_nav2_map is only valid in mapping mode')
+        if not nav2_map_yaml or not os.path.isabs(nav2_map_yaml):
+            raise RuntimeError(
+                'save_nav2_map:=true requires an absolute nav2_map_yaml path'
+            )
+        if not nav2_map_yaml.endswith(('.yaml', '.yml')):
+            raise RuntimeError(
+                'save_nav2_map:=true requires nav2_map_yaml ending in .yaml '
+                'or .yml'
+            )
+
+    messages = [LogInfo(msg='Starting Point-LIO SLAM mode: {}'.format(mode))]
+    if save_map:
+        # A relative save_map_dir is resolved by the node against its working
+        # directory, which for ros2 launch is wherever the operator started it.
+        # Report the path the run will actually write so a map does not end up
+        # somewhere unexpected.
+        messages.append(LogInfo(
+            msg='Map output directory: {}'.format(
+                os.path.abspath(save_map_dir)
+            )
+        ))
+    return messages
+
 
 def generate_launch_description():
     pkg_hybrid_slam = get_package_share_directory('hybrid_slam')
@@ -14,6 +94,16 @@ def generate_launch_description():
         pkg_hybrid_slam, 'config', 'point_lio_mid360.yaml'
     )
     rviz_config_file = os.path.join(pkg_hybrid_slam, 'rviz', 'point_lio.rviz')
+
+    declare_mode_arg = DeclareLaunchArgument(
+        'mode',
+        default_value='mapping',
+        description=(
+            'SLAM lifecycle: mapping creates a map; localization requires a '
+            'prior PCD and publishes map -> odom after registration succeeds'
+        )
+    )
+    mode = LaunchConfiguration('mode')
 
     declare_publish_base_tf_arg = DeclareLaunchArgument(
         'publish_base_tf',
@@ -161,6 +251,47 @@ def generate_launch_description():
     )
     map_name = LaunchConfiguration('map_name')
 
+    declare_enable_backend_map_to_odom_arg = DeclareLaunchArgument(
+        'enable_backend_map_to_odom',
+        default_value='false',
+        description=(
+            'Let verified backend global constraints refine map -> odom; '
+            'prior-map localization still supplies the continuous transform'
+        )
+    )
+    enable_backend_map_to_odom = LaunchConfiguration(
+        'enable_backend_map_to_odom'
+    )
+
+    declare_enable_backend_localization_factor_arg = DeclareLaunchArgument(
+        'enable_backend_localization_factor',
+        default_value='false',
+        description=(
+            'Add accepted prior-map registrations to the backend graph; '
+            'requires use_prior_map:=true'
+        )
+    )
+    enable_backend_localization_factor = LaunchConfiguration(
+        'enable_backend_localization_factor'
+    )
+
+    declare_save_nav2_map_arg = DeclareLaunchArgument(
+        'save_nav2_map',
+        default_value='false',
+        description=(
+            'In mapping mode, write a Nav2 map YAML and PGM from the online '
+            'occupancy grid when nav2_map_yaml is absolute'
+        )
+    )
+    save_nav2_map = LaunchConfiguration('save_nav2_map')
+
+    declare_nav2_map_yaml_arg = DeclareLaunchArgument(
+        'nav2_map_yaml',
+        default_value='',
+        description='Absolute output YAML path for save_nav2_map'
+    )
+    nav2_map_yaml = LaunchConfiguration('nav2_map_yaml')
+
     point_lio_node = Node(
         package='hybrid_slam',
         executable='point_lio_node',
@@ -169,6 +300,7 @@ def generate_launch_description():
         parameters=[
             config_yaml,
             {
+                'lio.lifecycle.mode': mode,
                 'lidar_type': lidar_type,
                 'lio.prior_map_localization.enable': ParameterValue(
                     use_prior_map, value_type=bool
@@ -200,6 +332,20 @@ def generate_launch_description():
                 ),
                 'lio.map.save_map_dir': save_map_dir,
                 'lio.map.map_name': map_name,
+                'lio.backend.drive_map_to_odom': ParameterValue(
+                    enable_backend_map_to_odom, value_type=bool
+                ),
+                'lio.backend.use_localization_factor': ParameterValue(
+                    enable_backend_localization_factor, value_type=bool
+                ),
+                'lio.occupancy_grid.source': PythonExpression([
+                    "'online' if '", mode,
+                    "' == 'mapping' else 'snapshot'"
+                ]),
+                'lio.occupancy_grid.artifact.enable': ParameterValue(
+                    save_nav2_map, value_type=bool
+                ),
+                'lio.occupancy_grid.artifact.yaml_path': nav2_map_yaml,
             },
         ],
         arguments=['--ros-args', '--log-level', 'info']
@@ -258,6 +404,7 @@ def generate_launch_description():
     ld.add_action(declare_sensor_z_arg)
     ld.add_action(declare_sensor_roll_arg)
     ld.add_action(declare_rviz_arg)
+    ld.add_action(declare_mode_arg)
     ld.add_action(declare_lidar_type_arg)
     ld.add_action(declare_use_prior_map_arg)
     ld.add_action(declare_prior_map_file_arg)
@@ -269,6 +416,11 @@ def generate_launch_description():
     ld.add_action(declare_save_map_arg)
     ld.add_action(declare_save_map_dir_arg)
     ld.add_action(declare_map_name_arg)
+    ld.add_action(declare_enable_backend_map_to_odom_arg)
+    ld.add_action(declare_enable_backend_localization_factor_arg)
+    ld.add_action(declare_save_nav2_map_arg)
+    ld.add_action(declare_nav2_map_yaml_arg)
+    ld.add_action(OpaqueFunction(function=_validate_slam_mode))
     ld.add_action(base_tf_node)
     ld.add_action(sensor_tf_node)
     ld.add_action(point_lio_node)

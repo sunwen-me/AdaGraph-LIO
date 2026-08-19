@@ -32,6 +32,11 @@ using LI2Sup::LID_TYPE;
 using LI2Sup::PointLIOFrontend;
 using LI2Sup::SensorBridge;
 
+enum class StartupMode : std::uint8_t {
+  kMapping,
+  kLocalization,
+};
+
 hybrid_slam::geometry::StaticTransform3d ReadBaseImuTransform(
     rclcpp::Node& node);
 
@@ -43,6 +48,20 @@ T ReadParameter(rclcpp::Node& node, const char* name, T default_value) {
   T value = std::move(default_value);
   node.get_parameter(name, value);
   return value;
+}
+
+StartupMode ReadStartupMode(rclcpp::Node& node) {
+  const auto value = ReadParameter<std::string>(
+      node, "lio.lifecycle.mode", "mapping");
+  if (value == "mapping") {
+    return StartupMode::kMapping;
+  }
+  if (value == "localization") {
+    return StartupMode::kLocalization;
+  }
+  throw std::invalid_argument(
+      "lio.lifecycle.mode must be 'mapping' or 'localization', got '" +
+      value + "'");
 }
 
 PointLIOFrontend::Config ReadPointLioConfig(rclcpp::Node& node) {
@@ -371,6 +390,7 @@ int main(int argc, char** argv) {
       std::move(downstream_callbacks));
 
   try {
+    const auto startup_mode = ReadStartupMode(*node);
     frontend->setDownstreamFrameCallback(
         [downstream](LI2Sup::PointLIOOutputFrame&& frame,
                      const LI2Sup::IMUData& latest_imu) {
@@ -608,12 +628,37 @@ int main(int argc, char** argv) {
         });
     service_bridge.start();
 
-    if (const auto status = system->StartMapping(); !status.ok()) {
-      RCLCPP_FATAL(node->get_logger(), "failed to start mapping: %s",
-                   status.message.c_str());
+    hybrid_slam::system::SystemStatus startup_status;
+    if (startup_mode == StartupMode::kMapping) {
+      startup_status = system->StartMapping();
+    } else {
+      if (!runtime_config.prior_map.relocalization.enabled) {
+        throw std::invalid_argument(
+            "localization startup requires "
+            "lio.prior_map_localization.enable=true");
+      }
+      hybrid_slam::system::LocalizationOptions options;
+      options.map = downstream->localizationMap();
+      options.allow_deferred_map = false;
+      if (!options.map || !options.map->valid()) {
+        throw std::invalid_argument(
+            "localization startup requires a valid "
+            "lio.prior_map_localization.map_file");
+      }
+      startup_status = system->StartLocalization(std::move(options));
+    }
+    if (!startup_status.ok()) {
+      const char* mode = startup_mode == StartupMode::kMapping
+                             ? "mapping"
+                             : "localization";
+      RCLCPP_FATAL(node->get_logger(), "failed to start %s: %s", mode,
+                   startup_status.message.c_str());
       rclcpp::shutdown();
       return 1;
     }
+    RCLCPP_INFO(node->get_logger(), "Point-LIO lifecycle started: %s",
+                startup_mode == StartupMode::kMapping ? "mapping"
+                                                      : "localization");
 
     auto process_timer = node->create_wall_timer(
         std::chrono::milliseconds(2),
