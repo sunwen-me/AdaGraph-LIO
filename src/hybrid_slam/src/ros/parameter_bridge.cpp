@@ -102,6 +102,9 @@ PointLIORuntimeConfig ReadPointLIORuntimeConfigFromRos(rclcpp::Node& node) {
   config.backend.keyframe_max_points = ReadPositiveSize(
       node, "lio.backend.keyframe_max_points",
       static_cast<int>(config.backend.keyframe_max_points));
+  config.backend.keyframe_cloud_voxel_size_m = ReadParameter<double>(
+      node, "lio.backend.keyframe_cloud_voxel_size",
+      config.backend.keyframe_cloud_voxel_size_m);
   config.backend.submap_max_keyframes = ReadPositiveSize(
       node, "lio.backend.submap_max_keyframes",
       static_cast<int>(config.backend.submap_max_keyframes));

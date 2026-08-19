@@ -168,6 +168,14 @@
     lio.prior_map_localization.smooth_translation_alpha: 0.1
     lio.prior_map_localization.smooth_rotation_alpha: 0.1
 
+    # Voxel edge length applied to each keyframe cloud before it enters the
+    # pose graph, in metres. Keyframe clouds are never evicted, so this is the
+    # main bound on session memory growth. Every consumer works at a coarser
+    # scale already (map saving voxelizes at lio.map.ds_size, prior-map VGICP
+    # at local_voxel_size, loop verification re-voxelizes), so filtering here
+    # costs nothing they can observe. Set 0.0 to retain raw matching points.
+    lio.backend.keyframe_cloud_voxel_size: 0.1
+
     # HybridSLAM backend: fuse accepted prior-map registrations as absolute
     # factors in the pose graph and publish /lio/backend/optimized_path.
     # Experimental, not yet validated on a real robot.

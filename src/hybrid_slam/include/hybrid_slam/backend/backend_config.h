@@ -13,6 +13,16 @@ struct BackendConfig {
   double keyframe_rotation_rad = 0.1;
   std::size_t keyframe_max_frames = 30;
   std::size_t keyframe_max_points = 50'000;
+  // Voxel edge length applied to a keyframe cloud before it enters the graph.
+  // Retained keyframe clouds are the dominant session memory cost: nothing
+  // evicts them, and every published snapshot keeps them alive for the whole
+  // run. Every consumer already works at a coarser scale than the raw matching
+  // points - the saved PCD is voxelized at lio.map.ds_size, prior-map VGICP at
+  // lio.prior_map_localization.local_voxel_size, and loop verification
+  // re-voxelizes its own inputs - so filtering once here bounds the footprint
+  // without changing what those stages actually see. Zero disables filtering
+  // and restores the previous unfiltered behaviour.
+  double keyframe_cloud_voxel_size_m = 0.1;
   std::size_t submap_max_keyframes = 100;
   std::size_t submission_queue_capacity = 16;
   double odometry_translation_sigma_m = 0.035;
@@ -45,6 +55,11 @@ struct BackendConfig {
         submap_max_keyframes == 0 ||
         submission_queue_capacity == 0) {
       return "backend keyframe/submap/queue capacities must be greater than zero";
+    }
+    if (!std::isfinite(keyframe_cloud_voxel_size_m) ||
+        keyframe_cloud_voxel_size_m < 0.0) {
+      return "backend.keyframe_cloud_voxel_size_m must be finite and "
+             "non-negative";
     }
     if (!std::isfinite(odometry_translation_sigma_m) ||
         odometry_translation_sigma_m <= 0.0 ||
