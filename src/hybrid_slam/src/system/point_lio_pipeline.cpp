@@ -748,6 +748,17 @@ void PointLIOPipeline::finish() {
               << tf_stats.nonmonotonic_map_odom_stamps
               << hybrid_slam::logging::kReset;
   }
+  // Both counters record work this pipeline declined rather than performed, so
+  // they are only meaningful as an end-of-session total. A rising skipped count
+  // means frame processing routinely outlives the health timer; a non-zero
+  // not_enqueued count means relocalization results were malformed.
+  LOG(INFO) << hybrid_slam::logging::kGreen
+            << " ---> [FrontendWatchdog]: timeout_observations_skipped="
+            << frontend_timeout_observations_skipped_.load(
+                   std::memory_order_relaxed)
+            << ", alignment_updates_not_enqueued="
+            << alignment_updates_not_enqueued_.load(std::memory_order_relaxed)
+            << hybrid_slam::logging::kReset;
   const auto mailbox_stats = global_alignment_mailbox_.stats();
   LOG(INFO) << hybrid_slam::logging::kGreen
             << " ---> [GlobalAlignmentQueue]: enqueued/replaced/committed/"
