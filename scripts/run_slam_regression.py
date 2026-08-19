@@ -441,6 +441,28 @@ def evaluate_acceptance(
                         f"PCD file count {len(files)} < minimum {minimum_files}"
                     )
                 minimum_points = int(pcd_acceptance.get("minimum_points", 1))
+                require_coverage = bool(
+                    pcd_acceptance.get("require_trajectory_coverage", False)
+                )
+                coverage_margin_m = float(
+                    pcd_acceptance.get("coverage_margin_m", 2.0)
+                )
+                endpoints: List[Tuple[str, Sequence[float]]] = []
+                if require_coverage:
+                    trajectory_summary = summary.get("trajectory", {})
+                    if isinstance(trajectory_summary, dict):
+                        for label, key in (
+                            ("start", "start_position_m"),
+                            ("end", "end_position_m"),
+                        ):
+                            position = trajectory_summary.get(key)
+                            if isinstance(position, list) and len(position) == 3:
+                                endpoints.append((label, position))
+                    if not endpoints:
+                        failures.append(
+                            "trajectory summary lacks the endpoint positions "
+                            "needed to check saved-map coverage"
+                        )
                 for entry in files:
                     if not isinstance(entry, dict):
                         failures.append("PCD summary contains a non-object entry")
@@ -455,6 +477,37 @@ def evaluate_acceptance(
                             f"{entry.get('point_count')} < minimum {minimum_points}: "
                             f"{entry.get('path')}"
                         )
+                    if not require_coverage:
+                        continue
+                    # A saved map has to span the trajectory it was built from.
+                    # Losing keyframes, writing the wrong frame, or saving an
+                    # identity-transformed cloud all leave a box that no longer
+                    # contains the path, and a point-count floor cannot see any
+                    # of it.
+                    box_min = entry.get("minimum")
+                    box_max = entry.get("maximum")
+                    if not (
+                        isinstance(box_min, list)
+                        and isinstance(box_max, list)
+                        and len(box_min) == 3
+                        and len(box_max) == 3
+                    ):
+                        failures.append(
+                            f"PCD entry lacks bounds: {entry.get('path')}"
+                        )
+                        continue
+                    for label, position in endpoints:
+                        for axis in range(3):
+                            low = float(box_min[axis]) - coverage_margin_m
+                            high = float(box_max[axis]) + coverage_margin_m
+                            value = float(position[axis])
+                            if not low <= value <= high:
+                                failures.append(
+                                    f"saved map does not cover the trajectory "
+                                    f"{label} on axis {axis}: {value:.3f} "
+                                    f"outside [{low:.3f}, {high:.3f}]: "
+                                    f"{entry.get('path')}"
+                                )
 
     if acceptance.get("require_relocalization_scheduler", False):
         diagnostics = summary.get("diagnostics", {})

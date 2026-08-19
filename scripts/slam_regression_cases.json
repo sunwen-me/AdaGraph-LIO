@@ -48,6 +48,29 @@
         "minimum_lost_recovery_attempts": 0,
         "maximum_first_success_delay_s": 20.0
       }
+    },
+    {
+      "id": "m2dgr_room01_point_lio_5x_save_map",
+      "frontend": "point_lio",
+      "sequence": "room_01",
+      "replay_rate": 5.0,
+      "params": "src/hybrid_slam/config/point_lio_m2dgr.yaml",
+      "save_map": {
+        "enable": true
+      },
+      "acceptance": {
+        "minimum_pose_count": 600,
+        "minimum_path_length_m": 24.0,
+        "maximum_path_length_m": 32.0,
+        "maximum_ape_rmse_m": 0.55,
+        "require_backend_chain_consistency": true,
+        "pcd": {
+          "minimum_files": 1,
+          "minimum_points": 2000,
+          "require_trajectory_coverage": true,
+          "coverage_margin_m": 2.0
+        }
+      }
     }
   ]
 }
