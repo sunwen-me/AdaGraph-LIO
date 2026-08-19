@@ -14,9 +14,12 @@ from typing import Dict, List, Optional, Tuple
 Pose = Tuple[float, float, float, float, float, float, float, float]
 
 
-def parse_tum(path: Path) -> Tuple[List[Pose], Dict[str, object]]:
+def parse_tum(
+    path: Path, *, allow_position_only: bool = False
+) -> Tuple[List[Pose], Dict[str, object]]:
     poses: List[Pose] = []
     quaternion_norm_error_max = 0.0
+    orientation_available = True
 
     with path.open("r", encoding="ascii") as stream:
         for line_number, raw_line in enumerate(stream, start=1):
@@ -48,10 +51,13 @@ def parse_tum(path: Path) -> Tuple[List[Pose], Dict[str, object]]:
 
             quaternion_norm = math.sqrt(sum(value * value for value in pose[4:8]))
             if quaternion_norm < 1.0e-12:
-                raise ValueError(f"{path}:{line_number}: zero-length quaternion")
-            quaternion_norm_error_max = max(
-                quaternion_norm_error_max, abs(quaternion_norm - 1.0)
-            )
+                if not allow_position_only:
+                    raise ValueError(f"{path}:{line_number}: zero-length quaternion")
+                orientation_available = False
+            else:
+                quaternion_norm_error_max = max(
+                    quaternion_norm_error_max, abs(quaternion_norm - 1.0)
+                )
             poses.append(pose)
 
     if not poses:
@@ -72,6 +78,7 @@ def parse_tum(path: Path) -> Tuple[List[Pose], Dict[str, object]]:
         "path_length_m": path_length,
         "start_position_m": list(poses[0][1:4]),
         "end_position_m": list(poses[-1][1:4]),
+        "orientation_available": orientation_available,
         "quaternion_norm_error_max": quaternion_norm_error_max,
         "timestamps_strictly_increasing": True,
         "finite": True,
@@ -609,7 +616,7 @@ def main() -> None:
 
     ground_truth: Optional[Dict[str, object]] = None
     if args.ground_truth is not None:
-        _, ground_truth = parse_tum(args.ground_truth)
+        _, ground_truth = parse_tum(args.ground_truth, allow_position_only=True)
 
     summary: Dict[str, object] = {
         "schema_version": 1,

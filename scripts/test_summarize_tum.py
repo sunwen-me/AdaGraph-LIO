@@ -13,6 +13,21 @@ import summarize_tum  # noqa: E402
 
 
 class ParseNodeDiagnosticsTest(unittest.TestCase):
+    def test_accepts_position_only_ground_truth(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "ground_truth.tum"
+            path.write_text(
+                "1.0 0 0 0 0 0 0 0\n2.0 1 0 0 0 0 0 0\n",
+                encoding="ascii",
+            )
+            _, summary = summarize_tum.parse_tum(
+                path, allow_position_only=True
+            )
+
+        self.assertFalse(summary["orientation_available"])
+        self.assertEqual(summary["pose_count"], 2)
+        self.assertAlmostEqual(summary["path_length_m"], 1.0)
+
     def test_parses_loop_closure_scheduler(self) -> None:
         log = (
             "[LoopClosureScheduler]: submitted/replaced/cancelled/"
