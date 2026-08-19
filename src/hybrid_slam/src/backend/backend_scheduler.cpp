@@ -182,6 +182,21 @@ void BackendScheduler::workerLoop() {
         },
         std::move(*item));
 
+    // Snapshot-derived aggregates are gathered before the queue lock is taken.
+    // Producers block on that mutex whenever the submission queue is full, so
+    // scanning every submap while holding it would lengthen the frontend
+    // stall for work that is pure reporting. The map manager is written only
+    // by this worker, so reading it here needs no additional lock.
+    const auto map_snapshot = map_manager_.snapshot();
+    const std::size_t finished_submap_count =
+        static_cast<std::size_t>(std::count_if(
+            map_snapshot->submaps.begin(), map_snapshot->submaps.end(),
+            [](const hybrid_slam::mapping::SubmapSnapshot& submap) {
+              return submap.state ==
+                     hybrid_slam::mapping::SubmapState::kFinished;
+            }));
+    const auto map_memory = map_manager_.memoryStats();
+
     {
       std::lock_guard<std::mutex> lock(queue_mutex_);
       ++stats_.processed;

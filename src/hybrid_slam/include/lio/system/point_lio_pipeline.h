@@ -323,8 +323,10 @@ class PointLIOPipeline {
   // recovery_transition_mutex_.
   std::size_t recovery_retry_cooldown_frames_ = 0;
   mutable std::mutex recovery_transition_mutex_;
-  int grid_count_ = 0;
-  int visualization_count_ = 0;
+  // Unbounded frame counters used only for output decimation. Signed types
+  // would overflow into undefined behaviour on a long-running session.
+  std::uint64_t grid_count_ = 0;
+  std::uint64_t visualization_count_ = 0;
   mutable std::mutex map_io_state_mutex_;
   // Serializes potentially blocking submissions with scheduler shutdown. It
   // prevents finishMapIo() from waiting on the state lock while submit() is
@@ -339,6 +341,13 @@ class PointLIOPipeline {
   hybrid_slam::system::GlobalAlignmentUpdateMailbox global_alignment_mailbox_;
   std::uint64_t alignment_updates_committed_ = 0;
   std::uint64_t alignment_updates_rejected_ = 0;
+  // Relocalization results the mailbox refused. They are otherwise invisible:
+  // the mailbox is latest-only, so a rejection is not the same as a
+  // supersession and must not be silently equivalent to success.
+  std::atomic<std::uint64_t> alignment_updates_not_enqueued_{0};
+  // Watchdog ticks that declined to wait for the downstream worker. A steadily
+  // rising value means frame processing routinely outlives the health timer.
+  std::atomic<std::uint64_t> frontend_timeout_observations_skipped_{0};
 };
 
 }  // namespace LI2Sup

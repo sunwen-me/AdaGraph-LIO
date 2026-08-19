@@ -9,10 +9,12 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 #include <Eigen/Eigenvalues>
 #include <pcl/common/transforms.h>
+#include <pcl/filters/voxel_grid.h>
 
 #include "hybrid_slam/logging/logging.h"
 #include "hybrid_slam/mapping/snapshot_products.h"
@@ -106,6 +108,29 @@ hybrid_slam::sensor::ImmutablePointCloud SharePclCloud(
   return hybrid_slam::sensor::ImmutablePointCloud::Share(
       std::move(frozen), view,
       cloud->points.capacity() * sizeof(PclPoint));
+}
+
+// Bounds what a keyframe contributes to retained session memory. Nothing
+// evicts keyframe clouds, so an unfiltered run grows without limit. The input
+// is returned unchanged when filtering is disabled or cannot help, so a
+// keyframe never loses its cloud to a degenerate filter result: PCL empties
+// the output when the leaf size would overflow its voxel index, and an empty
+// cloud would fail the keyframe invariant downstream.
+PclCloudPtr VoxelFilterKeyFrameCloud(const PclCloudPtr& cloud,
+                                     const double leaf_size_m) {
+  if (!cloud || cloud->empty() || !(leaf_size_m > 0.0)) {
+    return cloud;
+  }
+  const auto leaf = static_cast<float>(leaf_size_m);
+  auto filtered = std::make_shared<PclPointCloud>();
+  pcl::VoxelGrid<PclPoint> voxel_filter;
+  voxel_filter.setLeafSize(leaf, leaf, leaf);
+  voxel_filter.setInputCloud(cloud);
+  voxel_filter.filter(*filtered);
+  if (filtered->empty() || filtered->size() >= cloud->size()) {
+    return cloud;
+  }
+  return filtered;
 }
 
 PointLIOPipeline::PointLIOPipeline(
@@ -871,6 +896,19 @@ bool PointLIOPipeline::submitGraphKeyFrame(
     return false;
   }
 
+  // This is the last point at which the cloud is still mutable. Once it is
+  // frozen into the keyframe it is retained for the rest of the session by
+  // every published snapshot, so the storage bound is applied here.
+  const std::size_t unfiltered_point_count = cloud_base->size();
+  cloud_base = VoxelFilterKeyFrameCloud(
+      cloud_base, backend_config_.keyframe_cloud_voxel_size_m);
+  if (cloud_base->size() != unfiltered_point_count) {
+    LOG_EVERY_N(INFO, 200)
+        << " ---> [BackendScheduler]: keyframe cloud voxel filter leaf="
+        << backend_config_.keyframe_cloud_voxel_size_m << "m, points "
+        << unfiltered_point_count << " -> " << cloud_base->size();
+  }
+
   const auto& points = cloud_base->points;
   const auto* origin = reinterpret_cast<const std::byte*>(points.data());
   const std::size_t x_offset = static_cast<std::size_t>(
@@ -1168,7 +1206,17 @@ void PointLIOPipeline::resetRecoveryQueryAccumulator() noexcept {
 }
 
 void PointLIOPipeline::observeFrontendTimeout() {
-  std::lock_guard<std::mutex> lock(recovery_transition_mutex_);
+  // This runs on the ROS callback group that also owns sensor ingress and the
+  // frontend pump, so it must never wait for the downstream worker. Failing to
+  // acquire the lock means a frame is being processed right now, which is
+  // itself evidence that the frontend is alive; the next tick re-evaluates the
+  // gap. Blocking here would stall IMU/LiDAR subscriptions behind whatever the
+  // downstream worker is doing, including a full backend submission queue.
+  std::unique_lock<std::mutex> lock(recovery_transition_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    ++frontend_timeout_observations_skipped_;
+    return;
+  }
   if (!initialized_.load(std::memory_order_acquire) ||
       !frontend_health_monitor_ ||
       !frontend_health_monitor_->config().enabled ||
@@ -1326,8 +1374,17 @@ void PointLIOPipeline::submitMapObservations(
 
 void PointLIOPipeline::enqueueRelocalizationUpdate(
     const hybrid_slam::localization::RelocalizationUpdate& update) {
-  const bool accepted = global_alignment_mailbox_.submit(update);
-  (void)accepted;
+  // Called from the relocalization worker. A refused submission means the
+  // update was malformed, not merely superseded, so it must be visible.
+  if (!global_alignment_mailbox_.submit(update)) {
+    const auto total = alignment_updates_not_enqueued_.fetch_add(
+                           1, std::memory_order_relaxed) +
+                       1;
+    LOG(WARNING) << hybrid_slam::logging::kYellow
+                 << " ---> [GlobalAlignment]: relocalization update refused by"
+                    " mailbox, not_enqueued_total="
+                 << total << hybrid_slam::logging::kReset;
+  }
 }
 
 bool PointLIOPipeline::commitGlobalAlignment(
@@ -1404,16 +1461,29 @@ void PointLIOPipeline::applyBackendAlignmentFromSnapshot() {
   // that may drive map->odom. This includes same-trajectory loop closures,
   // cross-trajectory reconnect loops, and absolute prior/relocalization
   // factors. Point-LIO's ESKF and local map remain strictly odom-frame state.
-  const auto belongs_to_current_trajectory = [this, &snapshot](
-                                               const auto node_id) {
-    return std::any_of(
-        snapshot->keyframes.begin(), snapshot->keyframes.end(),
-        [this, node_id](const auto& keyframe) {
-          return keyframe.node_id == node_id &&
-                 keyframe.session_id == session_id_ &&
-                 keyframe.trajectory_id == trajectory_id_;
-        });
-  };
+  //
+  // One pass over the keyframes collects both the node set used by the
+  // constraint scan and this trajectory's latest keyframe. Rescanning every
+  // keyframe per constraint would be O(constraints * keyframes) on the
+  // downstream worker for every new snapshot.
+  std::unordered_set<std::uint64_t> current_trajectory_nodes;
+  current_trajectory_nodes.reserve(snapshot->keyframes.size());
+  const hybrid_slam::mapping::KeyFrameSnapshot* latest = nullptr;
+  for (const auto& keyframe : snapshot->keyframes) {
+    if (keyframe.session_id != session_id_ ||
+        keyframe.trajectory_id != trajectory_id_) {
+      continue;
+    }
+    current_trajectory_nodes.insert(keyframe.node_id.value());
+    if (latest == nullptr ||
+        keyframe.T_odom_base.timestamp > latest->T_odom_base.timestamp) {
+      latest = &keyframe;
+    }
+  }
+  const auto belongs_to_current_trajectory =
+      [&current_trajectory_nodes](const auto node_id) {
+        return current_trajectory_nodes.count(node_id.value()) != 0;
+      };
   const bool has_global_constraint = [&]() {
     for (const auto& constraint : snapshot->constraints) {
       if (const auto* relative = std::get_if<
@@ -1444,40 +1514,29 @@ void PointLIOPipeline::applyBackendAlignmentFromSnapshot() {
     return;
   }
 
-  const hybrid_slam::mapping::KeyFrameSnapshot* latest = nullptr;
-  for (const auto& keyframe : snapshot->keyframes) {
-    if (keyframe.session_id != session_id_ ||
-        keyframe.trajectory_id != trajectory_id_) {
-      continue;
-    }
-    if (latest == nullptr ||
-        keyframe.T_odom_base.timestamp > latest->T_odom_base.timestamp) {
-      latest = &keyframe;
-    }
-  }
   if (latest == nullptr || !latest->T_map_base.valid() ||
       !latest->T_odom_base.valid()) {
     last_backend_alignment_snapshot_version_ = snapshot->version;
     return;
   }
 
-  const auto candidate_T_map_odom =
-      latest->T_map_base.compose(latest->T_odom_base.inverse());
-  if (!candidate_T_map_odom) {
-    last_backend_alignment_snapshot_version_ = snapshot->version;
-    return;
-  }
-
+  // GlobalAlignmentState::commit derives map->odom from this pose pair and
+  // validates the frame directions and the shared timestamp itself, so the
+  // keyframe poses are forwarded as they are. Recomposing T_map_base from an
+  // intermediate map->odom here would only reproduce latest->T_map_base with
+  // extra rounding.
   last_backend_alignment_snapshot_version_ = snapshot->version;
-  const auto T_map_base = candidate_T_map_odom->compose(latest->T_odom_base);
-  if (!T_map_base) {
-    ++alignment_updates_rejected_;
-    return;
+  if (!commitGlobalAlignment(
+          latest->T_map_base, latest->T_odom_base,
+          hybrid_slam::system::GlobalAlignmentSource::kBackendOptimization,
+          0.0)) {
+    LOG_EVERY_N(WARNING, 20)
+        << hybrid_slam::logging::kYellow
+        << " ---> [GlobalAlignment]: backend-driven map->odom rejected"
+        << ", snapshot_version=" << snapshot->version
+        << ", rejected_total=" << alignment_updates_rejected_
+        << hybrid_slam::logging::kReset;
   }
-  const bool committed = commitGlobalAlignment(
-      *T_map_base, latest->T_odom_base,
-      hybrid_slam::system::GlobalAlignmentSource::kBackendOptimization, 0.0);
-  (void)committed;
 }
 
 void PointLIOPipeline::processPointFrame(
@@ -1487,8 +1546,10 @@ void PointLIOPipeline::processPointFrame(
     throw std::logic_error(
         "PointLIOPipeline must be initialized before processing");
   }
-  std::lock_guard<std::mutex> recovery_lock(recovery_transition_mutex_);
-  applyPendingRelocalizationUpdate();
+  {
+    std::lock_guard<std::mutex> recovery_lock(recovery_transition_mutex_);
+    applyPendingRelocalizationUpdate();
+  }
 
   // The frame retains unique ownership for the whole call. No point vector is
   // copied when crossing from the frontend queue into this system boundary.
@@ -1497,10 +1558,6 @@ void PointLIOPipeline::processPointFrame(
       frame.matching_points_odom.empty()) {
     return;
   }
-
-  // This decision is made on the downstream worker. It affects subsequent
-  // vendor point admissions, so the estimator never waits for this path.
-  const auto health_decision = updateFrontendHealth(frame, latest_imu);
 
   const NavState& state = frame.state;
   const SE3 odom_body = toBasicPose(state.T_odom_imu);
@@ -1514,53 +1571,69 @@ void PointLIOPipeline::processPointFrame(
     return body_cloud;
   };
 
-  std::optional<hybrid_slam::localization::RelocalizationQuery> query;
-  if (health_decision.state ==
-      hybrid_slam::frontend::FrontendHealthState::kLost) {
-    if (frame.recovery_query && frame.recovery_query->valid()) {
-      query = appendRecoveryQueryFrame(
-          frame.recovery_query->points_odom,
-          frame.recovery_query->T_odom_base);
-    } else if (const auto T_odom_base =
-                   toOdomBase(odom_body, frame.state.timestamp)) {
-      // Direct/unit-test compositions do not own a frontend raw-query path.
-      // Production PointLIOFrontend supplies recovery_query above.
-      query = appendRecoveryQueryFrame(frame.dense_points_odom, *T_odom_base);
-      if (query && query->valid()) {
-        last_relocalization_query_ = query;
-      }
-    }
-  } else {
-    resetRecoveryQueryAccumulator();
-  }
-  // A recovery result must be bound to a scan produced after the loss was
-  // observed. Reusing the last pre-dropout scan would seed a trajectory at an
-  // old physical pose and leave the first post-dropout scan with an arbitrary
-  // timestamp/geometry gap. The watchdog only transitions the lifecycle to
-  // LOST; this fresh frame provides the recovery query.
-  maybeRequestSubmapRecovery(health_decision.state, query);
+  // Recovery transitions replace the keyframe policy, the trajectory identity
+  // and the global alignment, so health evaluation, recovery-query
+  // accumulation and graph submission must all observe one consistent
+  // transition state. Everything that only reads this frame stays outside.
+  {
+    std::lock_guard<std::mutex> recovery_lock(recovery_transition_mutex_);
+    // This decision is made on the downstream worker. It affects subsequent
+    // vendor point admissions, so the estimator never waits for this path.
+    const auto health_decision = updateFrontendHealth(frame, latest_imu);
 
-  if (backend_scheduler_ && keyframe_policy_ &&
-      health_decision.global_keyframe_write_enabled) {
-    const auto domain_pose = toDomainPose(odom_body);
-    if (keyframe_policy_->shouldAccept(domain_pose)) {
-      const SE3 last_keyframe_pose =
-          toBasicPose(keyframe_policy_->lastAcceptedPose());
-      const PclCloudPtr matching_cloud = frame.matching_points_odom.empty()
-          ? get_body_cloud()
-          : toImuCloud(frame.matching_points_odom, odom_body,
-                       backend_config_.keyframe_max_points);
-      if (processPointBackend(frame, odom_body, last_keyframe_pose,
-                              matching_cloud, latest_imu)) {
-        keyframe_policy_->accept(domain_pose);
+    std::optional<hybrid_slam::localization::RelocalizationQuery> query;
+    if (health_decision.state ==
+        hybrid_slam::frontend::FrontendHealthState::kLost) {
+      if (frame.recovery_query && frame.recovery_query->valid()) {
+        query = appendRecoveryQueryFrame(
+            frame.recovery_query->points_odom,
+            frame.recovery_query->T_odom_base);
+      } else if (const auto T_odom_base =
+                     toOdomBase(odom_body, frame.state.timestamp)) {
+        // Direct/unit-test compositions do not own a frontend raw-query path.
+        // Production PointLIOFrontend supplies recovery_query above.
+        query = appendRecoveryQueryFrame(frame.dense_points_odom, *T_odom_base);
+        if (query && query->valid()) {
+          last_relocalization_query_ = query;
+        }
+      }
+    } else {
+      resetRecoveryQueryAccumulator();
+    }
+    // A recovery result must be bound to a scan produced after the loss was
+    // observed. Reusing the last pre-dropout scan would seed a trajectory at
+    // an old physical pose and leave the first post-dropout scan with an
+    // arbitrary timestamp/geometry gap. The watchdog only transitions the
+    // lifecycle to LOST; this fresh frame provides the recovery query.
+    maybeRequestSubmapRecovery(health_decision.state, query);
+
+    if (backend_scheduler_ && keyframe_policy_ &&
+        health_decision.global_keyframe_write_enabled) {
+      const auto domain_pose = toDomainPose(odom_body);
+      if (keyframe_policy_->shouldAccept(domain_pose)) {
+        const SE3 last_keyframe_pose =
+            toBasicPose(keyframe_policy_->lastAcceptedPose());
+        const PclCloudPtr matching_cloud = frame.matching_points_odom.empty()
+            ? get_body_cloud()
+            : toImuCloud(frame.matching_points_odom, odom_body,
+                         backend_config_.keyframe_max_points);
+        if (processPointBackend(frame, odom_body, last_keyframe_pose,
+                                matching_cloud, latest_imu)) {
+          keyframe_policy_->accept(domain_pose);
+        } else {
+          keyframe_policy_->reject();
+        }
       } else {
         keyframe_policy_->reject();
       }
-    } else {
-      keyframe_policy_->reject();
     }
   }
 
+  // Everything below is output: prior-map registration handoff, occupancy grid
+  // insertion and cloud publication. None of it reads recovery state, and all
+  // of it can be slow (PCL transforms, grid raycasting, ROS serialization).
+  // Holding the recovery lock across it would make the frontend watchdog and
+  // the recovery scheduler callbacks queue behind publication work.
   if (prior_map_localization_ && prior_map_localization_->enabled()) {
     if (callbacks_.consume_manual_relocalization_request &&
         callbacks_.consume_manual_relocalization_request()) {
@@ -1570,35 +1643,36 @@ void PointLIOPipeline::processPointFrame(
         state.timestamp, get_body_cloud(), odom_body);
   }
 
-  if (callbacks_.occupancy_grid_enabled &&
+  // Both decimation steps are validated to be >= 1 by PointLIORuntimeConfig
+  // and clamped again by the parameter adapters, so the modulo is safe.
+  if (callbacks_.occupancy_grid_enabled && callbacks_.update_occupancy_grid &&
       callbacks_.occupancy_grid_enabled()) {
-    const int grid_step = runtime_config_.grid_update_step;
+    const auto grid_step =
+        static_cast<std::uint64_t>(runtime_config_.grid_update_step);
     if ((grid_count_++ % grid_step) == 0) {
-      if (callbacks_.update_occupancy_grid) {
-        callbacks_.update_occupancy_grid(
-            SharePclCloud(get_body_cloud(),
-                          hybrid_slam::geometry::FrameId::kBase),
-            state);
-      }
+      callbacks_.update_occupancy_grid(
+          SharePclCloud(get_body_cloud(),
+                        hybrid_slam::geometry::FrameId::kBase),
+          state);
     }
   }
 
-  const int pub_step = runtime_config_.visualization_step;
+  const auto pub_step =
+      static_cast<std::uint64_t>(runtime_config_.visualization_step);
   const bool publish_world =
       runtime_config_.visualize_map &&
       (visualization_count_++ % pub_step) == 0;
-  if (publish_world) {
+  if (publish_world && callbacks_.publish_cloud_world) {
     const PclCloudPtr world_cloud = toCloud(frame.dense_points_odom);
-    if (publish_world) {
-      if (callbacks_.publish_cloud_world) {
-        callbacks_.publish_cloud_world(
-            SharePclCloud(world_cloud,
-                          hybrid_slam::geometry::FrameId::kOdom),
-            state.timestamp);
-      }
-    }
+    callbacks_.publish_cloud_world(
+        SharePclCloud(world_cloud, hybrid_slam::geometry::FrameId::kOdom),
+        state.timestamp);
   }
-  applyPendingRelocalizationUpdate();
+
+  {
+    std::lock_guard<std::mutex> recovery_lock(recovery_transition_mutex_);
+    applyPendingRelocalizationUpdate();
+  }
 }
 
 bool PointLIOPipeline::processPointBackend(
