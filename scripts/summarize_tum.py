@@ -285,6 +285,28 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
                 }
             )
 
+    # Parsed separately rather than as groups in the pattern above, which is
+    # positional: inserting captures mid-pattern would silently renumber every
+    # reference after it. Loop residuals are the only evidence that verified
+    # loop factors reached the graph, so a gate needs them addressable.
+    loop_residual_pattern = re.compile(
+        r"\[BackendScheduler\]:[^\n]*"
+        r"loop factor residuals count/max_translation/max_rotation="
+        r"(\d+)/([-+0-9.eE]+)\s*m/([-+0-9.eE]+)\s*rad"
+    )
+    loop_residual_matches = list(loop_residual_pattern.finditer(text))
+    if loop_residual_matches:
+        match = loop_residual_matches[-1]
+        diagnostics["loop_closure"] = {
+            "loop_constraint_residual_count": int(match.group(1)),
+            "maximum_loop_constraint_translation_residual_m": float(
+                match.group(2)
+            ),
+            "maximum_loop_constraint_rotation_residual_rad": float(
+                match.group(3)
+            ),
+        }
+
     backend_memory_pattern = re.compile(
         r"\[BackendScheduler\]:[^\n]*"
         r"keyframe_clouds\(unique/points/logical/backing\)="

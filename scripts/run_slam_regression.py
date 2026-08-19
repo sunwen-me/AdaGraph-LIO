@@ -129,7 +129,21 @@ def evaluate_acceptance(
             failed = int(scheduler.get("failed", -1))
             node_count = int(scheduler.get("node_count", -1))
             constraint_count = int(scheduler.get("constraint_count", -1))
-            expected_constraints = max(0, node_count - 1)
+            # The odometry chain contributes one constraint per node gap, and
+            # every verified loop factor adds one more. Without the loop term
+            # this check reports a healthy loop-closing run as inconsistent,
+            # which is why it previously only applied to odometry-only cases.
+            loop_diagnostics = (
+                diagnostics.get("loop_closure", {})
+                if isinstance(diagnostics, dict)
+                else {}
+            )
+            loop_constraint_count = (
+                int(loop_diagnostics.get("loop_constraint_residual_count", 0))
+                if isinstance(loop_diagnostics, dict)
+                else 0
+            )
+            expected_constraints = max(0, node_count - 1) + loop_constraint_count
             if enqueued != processed or failed != 0:
                 failures.append(
                     "backend scheduler did not reliably drain: "
@@ -199,7 +213,11 @@ def evaluate_acceptance(
             optimizer_failures = int(
                 scheduler.get("optimizer_failures", -1)
             )
-            if optimizer_updates != node_count or optimizer_failures != 0:
+            # Every node has to drive an optimizer update, but loop factors and
+            # the shutdown finalization legitimately add more, so only a deficit
+            # indicates a broken chain. Requiring equality made a loop-closing
+            # run report 2815 updates against 2800 nodes as inconsistent.
+            if optimizer_updates < node_count or optimizer_failures != 0:
                 failures.append(
                     "optimizer update chain is inconsistent: "
                     f"updates/failures={optimizer_updates}/{optimizer_failures}, "
@@ -509,6 +527,53 @@ def evaluate_acceptance(
                                     f"{entry.get('path')}"
                                 )
 
+    loop_acceptance = acceptance.get("loop_closure")
+    if loop_acceptance is not None:
+        if not isinstance(loop_acceptance, dict):
+            failures.append("loop_closure acceptance field is not an object")
+        else:
+            diagnostics = summary.get("diagnostics", {})
+            loop = (
+                diagnostics.get("loop_closure", {})
+                if isinstance(diagnostics, dict)
+                else {}
+            )
+            if not isinstance(loop, dict) or not loop:
+                # Absent diagnostics must fail rather than pass quietly: a run
+                # that stopped closing loops produces no loop line at all.
+                failures.append("loop closure diagnostics are missing")
+            else:
+                count = int(loop.get("loop_constraint_residual_count", -1))
+                minimum_count = loop_acceptance.get("minimum_constraints")
+                if minimum_count is not None and count < int(minimum_count):
+                    failures.append(
+                        f"verified loop constraints {count} < minimum "
+                        f"{int(minimum_count)}"
+                    )
+                for key, limit_key, unit in (
+                    (
+                        "maximum_loop_constraint_translation_residual_m",
+                        "maximum_translation_residual_m",
+                        "m",
+                    ),
+                    (
+                        "maximum_loop_constraint_rotation_residual_rad",
+                        "maximum_rotation_residual_rad",
+                        "rad",
+                    ),
+                ):
+                    limit = loop_acceptance.get(limit_key)
+                    if limit is None:
+                        continue
+                    value = loop.get(key)
+                    if value is None:
+                        failures.append(f"loop residual {key} is missing")
+                    elif float(value) > float(limit):
+                        failures.append(
+                            f"loop residual {float(value):.6f}{unit} > maximum "
+                            f"{float(limit):.6f}{unit}"
+                        )
+
     if acceptance.get("require_relocalization_scheduler", False):
         diagnostics = summary.get("diagnostics", {})
         scheduler = (
@@ -763,6 +828,33 @@ def run_case(
         ):
             if field in backend:
                 environment[variable] = str(backend[field])
+
+    # Sequences that do not follow the DATASET_ROOT/<sequence>_ros2 layout, such
+    # as the urbanv2x loop bags, need their location stated outright.
+    dataset = case.get("dataset")
+    if dataset is not None:
+        if not isinstance(dataset, dict):
+            raise ValueError(f"case {case_id}: dataset is not an object")
+        for field, variable in (
+            ("bag_dir", "BAG_DIR"),
+            ("ground_truth", "GROUND_TRUTH"),
+            ("topics", "BAG_TOPICS"),
+        ):
+            if field in dataset:
+                environment[variable] = str(dataset[field])
+
+    # Loop closure is off in every shipped config, so a case that means to
+    # exercise it has to turn it on explicitly.
+    loop_closure = case.get("loop_closure")
+    if loop_closure is not None:
+        if not isinstance(loop_closure, dict):
+            raise ValueError(f"case {case_id}: loop_closure is not an object")
+        if "enable" in loop_closure:
+            environment["LOOP_CLOSURE_ENABLE"] = str(
+                loop_closure["enable"]
+            ).lower()
+        if "plugin" in loop_closure:
+            environment["LOOP_CLOSURE_PLUGIN"] = str(loop_closure["plugin"])
 
     replay = case.get("replay")
     if replay is not None:

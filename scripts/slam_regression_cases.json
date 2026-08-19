@@ -71,6 +71,62 @@
           "coverage_margin_m": 2.0
         }
       }
+    },
+    {
+      "id": "urbanv2x_small_loop_point_lio_1x_scan_context",
+      "frontend": "point_lio",
+      "sequence": "small_loop",
+      "replay_rate": 1.0,
+      "params": "src/hybrid_slam/config/point_lio_urbanv2x.yaml",
+      "dataset": {
+        "bag_dir": "/run/media/sw/仓库/urbanv2x/small_loop/small_loop_ros2_mcap",
+        "ground_truth": "/run/media/sw/仓库/urbanv2x/small_loop/gt_small_loop_aligned.tum",
+        "topics": "/velodyne_points /imu/data"
+      },
+      "loop_closure": {
+        "enable": true,
+        "plugin": "scan_context"
+      },
+      "acceptance": {
+        "minimum_pose_count": 20000,
+        "minimum_path_length_m": 2000.0,
+        "maximum_path_length_m": 2500.0,
+        "maximum_ape_rmse_m": 6.0,
+        "require_backend_chain_consistency": true,
+        "loop_closure": {
+          "minimum_constraints": 5,
+          "maximum_translation_residual_m": 0.5,
+          "maximum_rotation_residual_rad": 0.05
+        }
+      }
+    },
+    {
+      "id": "urbanv2x_large_loop_point_lio_1x_scan_context",
+      "frontend": "point_lio",
+      "sequence": "large_loop",
+      "replay_rate": 1.0,
+      "params": "src/hybrid_slam/config/point_lio_urbanv2x.yaml",
+      "dataset": {
+        "bag_dir": "/run/media/sw/仓库/urbanv2x/large_loop/large_loop_ros2_mcap",
+        "ground_truth": "/run/media/sw/仓库/urbanv2x/large_loop/gt_large_loop_aligned.tum",
+        "topics": "/velodyne_points /imu/data"
+      },
+      "loop_closure": {
+        "enable": true,
+        "plugin": "scan_context"
+      },
+      "acceptance": {
+        "minimum_pose_count": 40000,
+        "minimum_path_length_m": 4400.0,
+        "maximum_path_length_m": 4900.0,
+        "maximum_ape_rmse_m": 15.0,
+        "require_backend_chain_consistency": true,
+        "loop_closure": {
+          "minimum_constraints": 3,
+          "maximum_translation_residual_m": 0.5,
+          "maximum_rotation_residual_rad": 0.05
+        }
+      }
     }
   ]
 }
