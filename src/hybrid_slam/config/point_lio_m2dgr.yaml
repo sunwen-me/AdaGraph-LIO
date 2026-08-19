@@ -105,7 +105,15 @@
     lio.ground_robot.planar_constraint: false
     lio.nav2_tf.enable: false
     lio.kiss_matcher.enable: false
-    lio.kiss_matcher.voxel_size: 0.5
+    # Coupled with prior_map_localization.map_voxel_size below; do not change
+    # one without re-measuring the other. Measured on room_01, startup KISS
+    # attempts/successes and time to the first accepted registration:
+    #   loader default (~0.5) + this 0.5 -> 2/1,  5.80 s
+    #   loader 0.1          + this 0.5 -> 13/1, 60.81 s   (much worse)
+    #   loader 0.1          + this 0.2 ->  1/1,  0.69 s
+    # A denser target needs a matching feature scale; keeping the coarse value
+    # while densifying the map starves the ratio test of correspondences.
+    lio.kiss_matcher.voxel_size: 0.2
     lio.kiss_matcher.use_quatro: false
     lio.kiss_matcher.use_voxel_sampling: true
     lio.kiss_matcher.use_ratio_test: true
@@ -117,6 +125,13 @@
     lio.kiss_matcher.max_source_points: 30000
     lio.kiss_matcher.max_target_points: 120000
     lio.prior_map_localization.enable: false
+    # Voxel sizes the prior map and the live scan are reduced to before VGICP.
+    # These were previously absent, so the run silently fell back to a coarse
+    # built-in default that discarded two thirds of the loaded map (7415 -> 2273
+    # points on room_01) and left KISS-Matcher too few features to register
+    # against. Absent keys are not neutral here; state them explicitly.
+    lio.prior_map_localization.map_voxel_size: 0.1
+    lio.prior_map_localization.local_voxel_size: 0.1
     lio.prior_map_localization.minimum_inlier_ratio: 0.20
     lio.prior_map_localization.minimum_overlap: 0.10
     lio.backend.use_localization_factor: false
