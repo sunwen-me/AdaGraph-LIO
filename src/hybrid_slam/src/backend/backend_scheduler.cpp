@@ -225,20 +225,15 @@ void BackendScheduler::workerLoop() {
           relocalization_constraints_processed_;
       stats_.relocalization_constraints_dropped =
           relocalization_constraints_dropped_;
-      const auto map_snapshot = map_manager_.snapshot();
       stats_.map_snapshot_version = map_snapshot->version;
       stats_.submap_count = map_snapshot->submaps.size();
-      stats_.finished_submap_count = static_cast<std::size_t>(std::count_if(
-          map_snapshot->submaps.begin(), map_snapshot->submaps.end(),
-          [](const hybrid_slam::mapping::SubmapSnapshot& submap) {
-            return submap.state == hybrid_slam::mapping::SubmapState::kFinished;
-          }));
+      stats_.finished_submap_count = finished_submap_count;
       stats_.snapshot_observer_failures = snapshot_observer_failures_;
       stats_.evaluation_drifted_odometry_constraints =
           evaluation_drifted_odometry_constraints_;
       stats_.evaluation_drifted_distance_m = evaluation_drifted_distance_m_;
       stats_.evaluation_drifted_yaw_rad = evaluation_drifted_yaw_rad_;
-      stats_.map_memory = map_manager_.memoryStats();
+      stats_.map_memory = map_memory;
     }
   }
 }
