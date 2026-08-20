@@ -698,6 +698,15 @@ if(BUILD_TESTING)
   )
 
   ament_add_gtest(
+    test_frame_health_gate
+    test/test_frame_health_gate.cpp
+  )
+  target_link_libraries(test_frame_health_gate
+    hybrid_slam_point_lio_pipeline
+    Eigen3::Eigen
+  )
+
+  ament_add_gtest(
     test_pcl_submap_relocalizer
     test/test_pcl_submap_relocalizer.cpp
   )
