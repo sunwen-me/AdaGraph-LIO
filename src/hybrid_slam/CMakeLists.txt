@@ -689,6 +689,15 @@ if(BUILD_TESTING)
   )
 
   ament_add_gtest(
+    test_map_save_facade
+    test/test_map_save_facade.cpp
+  )
+  target_link_libraries(test_map_save_facade
+    hybrid_slam_point_lio_pipeline
+    Eigen3::Eigen
+  )
+
+  ament_add_gtest(
     test_pcl_submap_relocalizer
     test/test_pcl_submap_relocalizer.cpp
   )
