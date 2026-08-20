@@ -302,86 +302,46 @@ PointLIOPipeline::~PointLIOPipeline() {
   finishMapIo();
 }
 
-void PointLIOPipeline::ensureMapIo() {
+
+
+
+
+
+
+// The facade owns the scheduler and its lock order; map_io_state_mutex_ only
+// guards the pointer, because reset() may replace the facade while another
+// thread is saving. Every delegation therefore takes a strong reference under
+// the lock and releases it before calling, so a blocking operation such as
+// finish() joining its worker never runs with the pointer lock held.
+std::shared_ptr<MapSaveFacade> PointLIOPipeline::mapSaveFacade() {
   std::lock_guard<std::mutex> lock(map_io_state_mutex_);
-  ensureMapIoLocked();
+  if (!map_save_) {
+    map_save_ = std::make_shared<MapSaveFacade>();
+  }
+  return map_save_;
 }
 
-void PointLIOPipeline::ensureMapIoLocked() {
-  if (map_io_scheduler_ || map_io_finished_) {
-    return;
-  }
-  map_io_scheduler_ = std::make_unique<hybrid_slam::io::MapSaveScheduler>(
-      2, [this](const hybrid_slam::io::MapSaveResult& result) {
-        completeMapSave(result);
-      });
+std::shared_ptr<MapSaveFacade> PointLIOPipeline::mapSaveFacadeIfPresent()
+    const {
+  std::lock_guard<std::mutex> lock(map_io_state_mutex_);
+  return map_save_;
 }
 
-std::uint64_t PointLIOPipeline::allocateMapSaveRequestIdLocked(
-    const std::uint64_t requested_id) {
-  if (requested_id == 0) {
-    return next_map_save_request_id_++;
-  }
-  if (requested_id >= next_map_save_request_id_) {
-    next_map_save_request_id_ = requested_id + 1;
-  }
-  return requested_id;
-}
+void PointLIOPipeline::ensureMapIo() { mapSaveFacade()->ensureStarted(); }
 
 hybrid_slam::io::MapSaveSubmissionStatus
-PointLIOPipeline::submitMapIoRequest(
-    hybrid_slam::io::MapSaveRequest request) {
-  std::lock_guard<std::mutex> submit_lock(map_io_submit_mutex_);
-  std::lock_guard<std::mutex> lock(map_io_state_mutex_);
-  ensureMapIoLocked();
-  if (!map_io_scheduler_ || map_io_finished_) {
-    return hybrid_slam::io::MapSaveSubmissionStatus::kClosed;
-  }
-  request.request_id =
-      allocateMapSaveRequestIdLocked(request.request_id);
-  return map_io_scheduler_->submit(std::move(request));
+PointLIOPipeline::submitMapIoRequest(hybrid_slam::io::MapSaveRequest request) {
+  return mapSaveFacade()->submit(std::move(request));
 }
 
 bool PointLIOPipeline::mapIoAvailable() const noexcept {
-  std::lock_guard<std::mutex> lock(map_io_state_mutex_);
-  return map_io_scheduler_ != nullptr && !map_io_finished_;
+  const auto facade = mapSaveFacadeIfPresent();
+  return facade != nullptr && facade->available();
 }
 
-void PointLIOPipeline::completeMapSave(
-    const hybrid_slam::io::MapSaveResult& result) noexcept {
-  std::promise<hybrid_slam::system::SystemStatus> promise;
-  bool has_waiter = false;
-  {
-    std::lock_guard<std::mutex> lock(map_save_mutex_);
-    auto found = pending_map_saves_.find(result.request_id);
-    if (found != pending_map_saves_.end()) {
-      promise = std::move(found->second);
-      pending_map_saves_.erase(found);
-      has_waiter = true;
-    }
-  }
-
-  if (result.success) {
-    LOG(INFO) << hybrid_slam::logging::kGreen
-              << " ---> [MapSaveScheduler]: request=" << result.request_id
-              << ", snapshot=" << result.snapshot_version
-              << ", raw/saved points=" << result.raw_point_count << "/"
-              << result.saved_point_count << ", input files="
-              << result.input_file_count << ", " << result.message << hybrid_slam::logging::kReset;
-  } else {
-    LOG(ERROR) << hybrid_slam::logging::kRed
-               << " ---> [MapSaveScheduler]: request=" << result.request_id
-               << " failed: " << result.message << hybrid_slam::logging::kReset;
-  }
-
-  if (!has_waiter) {
-    return;
-  }
-  if (result.success) {
-    promise.set_value(hybrid_slam::system::SystemStatus::Ok());
-  } else {
-    promise.set_value(hybrid_slam::system::SystemStatus::Error(
-        hybrid_slam::system::SystemStatusCode::kRejected, result.message));
+void PointLIOPipeline::finishMapIo() {
+  if (const auto facade = mapSaveFacadeIfPresent()) {
+    facade->finish();
   }
 }
 
@@ -495,62 +455,8 @@ PointLIOPipeline::localizationMap() const noexcept {
 
 std::future<hybrid_slam::system::SystemStatus>
 PointLIOPipeline::saveMapAsync(hybrid_slam::io::MapSaveRequest request) {
-  std::promise<hybrid_slam::system::SystemStatus> promise;
-  auto future = promise.get_future();
-  if (!request.valid()) {
-    promise.set_value(hybrid_slam::system::SystemStatus::Error(
-        hybrid_slam::system::SystemStatusCode::kInvalidArgument,
-        "invalid map-save request"));
-    return future;
-  }
-  std::unique_lock<std::mutex> submit_lock(map_io_submit_mutex_);
-  std::unique_lock<std::mutex> io_lock(map_io_state_mutex_);
-  ensureMapIoLocked();
-  if (!map_io_scheduler_ || map_io_finished_) {
-    promise.set_value(hybrid_slam::system::SystemStatus::Error(
-        hybrid_slam::system::SystemStatusCode::kClosed,
-        "map IO scheduler is closed"));
-    return future;
-  }
-  request.request_id =
-      allocateMapSaveRequestIdLocked(request.request_id);
-  auto* const scheduler = map_io_scheduler_.get();
-  io_lock.unlock();
-  const auto request_id = request.request_id;
-  {
-    std::lock_guard<std::mutex> lock(map_save_mutex_);
-    if (pending_map_saves_.contains(request_id)) {
-      promise.set_value(hybrid_slam::system::SystemStatus::Error(
-          hybrid_slam::system::SystemStatusCode::kRejected,
-          "duplicate map-save request id"));
-      return future;
-    }
-    pending_map_saves_.emplace(request_id, std::move(promise));
-  }
-  const auto submission = scheduler->submit(std::move(request));
-  if (submission == hybrid_slam::io::MapSaveSubmissionStatus::kAccepted) {
-    return future;
-  }
-
-  std::promise<hybrid_slam::system::SystemStatus> failed_promise;
-  {
-    std::lock_guard<std::mutex> lock(map_save_mutex_);
-    auto found = pending_map_saves_.find(request_id);
-    if (found != pending_map_saves_.end()) {
-      failed_promise = std::move(found->second);
-      pending_map_saves_.erase(found);
-    }
-  }
-  if (submission == hybrid_slam::io::MapSaveSubmissionStatus::kInvalid) {
-    failed_promise.set_value(hybrid_slam::system::SystemStatus::Error(
-        hybrid_slam::system::SystemStatusCode::kInvalidArgument,
-        "map IO rejected an invalid request"));
-  } else {
-    failed_promise.set_value(hybrid_slam::system::SystemStatus::Error(
-        hybrid_slam::system::SystemStatusCode::kClosed,
-        "map IO scheduler is closed"));
-  }
-  return future;
+  ensureMapIo();
+  return map_save_->submitAsync(std::move(request));
 }
 
 PclCloudPtr PointLIOPipeline::toCloud(
@@ -807,7 +713,6 @@ void PointLIOPipeline::reset() {
   covariance_estimator_.reset();
   prior_map_localization_.reset();
   global_alignment_state_.reset();
-  map_io_scheduler_.reset();
   next_graph_keyframe_id_ = 0;
   accepted_keyframe_count_ = 0;
   next_global_alignment_version_ = 1;
@@ -826,10 +731,13 @@ void PointLIOPipeline::reset() {
   pending_recovery_constraint_.reset();
   prepared_recovery_.reset();
   recovery_retry_cooldown_frames_ = 0;
+  // Discarding the facade drains the old scheduler and fails any outstanding
+  // future, then lets the next save rebuild it. The previous code instead
+  // cleared the finished flag and the request counter in place, which is the
+  // same intent: a new session must be able to save again.
   {
     std::lock_guard<std::mutex> lock(map_io_state_mutex_);
-    map_io_finished_ = false;
-    next_map_save_request_id_ = 1;
+    map_save_.reset();
   }
   initialized_.store(false, std::memory_order_release);
   finished_.store(false, std::memory_order_release);
@@ -1881,33 +1789,5 @@ void PointLIOPipeline::saveSnapshotMap() {
                    snapshot->keyframes.size());
 }
 
-void PointLIOPipeline::finishMapIo() {
-  std::unique_lock<std::mutex> submit_lock(map_io_submit_mutex_);
-  std::unique_lock<std::mutex> io_lock(map_io_state_mutex_);
-  if (!map_io_scheduler_ || map_io_finished_) {
-    return;
-  }
-  map_io_scheduler_->finish();
-  map_io_finished_ = true;
-  const auto stats = map_io_scheduler_->stats();
-  io_lock.unlock();
-  std::unordered_map<std::uint64_t,
-                     std::promise<hybrid_slam::system::SystemStatus>> pending;
-  {
-    std::lock_guard<std::mutex> lock(map_save_mutex_);
-    pending.swap(pending_map_saves_);
-  }
-  for (auto& [request_id, promise] : pending) {
-    (void)request_id;
-    promise.set_value(hybrid_slam::system::SystemStatus::Error(
-        hybrid_slam::system::SystemStatusCode::kClosed,
-        "map IO scheduler stopped before completing request"));
-  }
-  LOG(INFO) << hybrid_slam::logging::kGreen
-            << " ---> [MapSaveScheduler]: submitted/processed/failed="
-            << stats.submitted << "/" << stats.processed << "/"
-            << stats.failed << ", max_queue=" << stats.maximum_queue_depth
-            << ", capacity_waits=" << stats.capacity_waits << hybrid_slam::logging::kReset;
-}
 
 }  // namespace LI2Sup

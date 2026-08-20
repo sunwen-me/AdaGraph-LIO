@@ -31,6 +31,7 @@
 #include "hybrid_slam/sensor/point_cloud_view.h"
 #include "lio/prior_map_localization.h"
 #include "lio/system/point_lio_runtime_config.h"
+#include "lio/system/map_save_facade.h"
 #include "lio/system/point_lio_output_frame.h"
 
 namespace LI2Sup {
@@ -273,12 +274,13 @@ class PointLIOPipeline {
   void finishMapIo();
   void ensureMapIo();
   void ensureMapIoLocked();
-  [[nodiscard]] std::uint64_t allocateMapSaveRequestIdLocked(
-      std::uint64_t requested_id);
   [[nodiscard]] hybrid_slam::io::MapSaveSubmissionStatus submitMapIoRequest(
       hybrid_slam::io::MapSaveRequest request);
   [[nodiscard]] bool mapIoAvailable() const noexcept;
-  void completeMapSave(const hybrid_slam::io::MapSaveResult& result) noexcept;
+  // Both return a strong reference so callers never invoke the facade while
+  // holding map_io_state_mutex_.
+  [[nodiscard]] std::shared_ptr<MapSaveFacade> mapSaveFacade();
+  [[nodiscard]] std::shared_ptr<MapSaveFacade> mapSaveFacadeIfPresent() const;
 
   struct PreparedRecoveredTrajectory {
     RecoveredTrajectoryStart start;
@@ -294,7 +296,11 @@ class PointLIOPipeline {
       covariance_estimator_;
   std::unique_ptr<hybrid_slam::frontend::FrontendHealthMonitor>
       frontend_health_monitor_;
-  std::unique_ptr<hybrid_slam::io::MapSaveScheduler> map_io_scheduler_;
+  // Map saving owns its own scheduler, request numbering, promise table and
+  // internal lock order; see MapSaveFacade. Only the pointer is guarded here,
+  // because reset() replaces the facade while other threads may be saving.
+  mutable std::mutex map_io_state_mutex_;
+  std::shared_ptr<MapSaveFacade> map_save_;
   std::unique_ptr<PriorMapLocalization> prior_map_localization_;
   std::unique_ptr<hybrid_slam::system::GlobalAlignmentState>
       global_alignment_state_;
@@ -348,16 +354,6 @@ class PointLIOPipeline {
   // would overflow into undefined behaviour on a long-running session.
   std::uint64_t grid_count_ = 0;
   std::uint64_t visualization_count_ = 0;
-  mutable std::mutex map_io_state_mutex_;
-  // Serializes potentially blocking submissions with scheduler shutdown. It
-  // prevents finishMapIo() from waiting on the state lock while submit() is
-  // waiting for queue capacity.
-  mutable std::mutex map_io_submit_mutex_;
-  std::uint64_t next_map_save_request_id_ = 1;
-  bool map_io_finished_ = false;
-  mutable std::mutex map_save_mutex_;
-  std::unordered_map<std::uint64_t, std::promise<hybrid_slam::system::SystemStatus>>
-      pending_map_saves_;
 
   hybrid_slam::system::GlobalAlignmentUpdateMailbox global_alignment_mailbox_;
   std::uint64_t alignment_updates_committed_ = 0;
