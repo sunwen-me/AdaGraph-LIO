@@ -843,6 +843,21 @@ def run_case(
             if field in dataset:
                 environment[variable] = str(dataset[field])
 
+    # Frontend health is disabled in every shipped config, so the health state
+    # machine and its dropout watchdog are unreachable from a default run. A
+    # case that means to cover them has to enable it outright.
+    frontend_health = case.get("frontend_health")
+    if frontend_health is not None:
+        if not isinstance(frontend_health, dict):
+            raise ValueError(f"case {case_id}: frontend_health is not an object")
+        for field, variable in (
+            ("enable", "FRONTEND_HEALTH_ENABLE"),
+            ("lost_bad_frames", "FRONTEND_HEALTH_LOST_BAD_FRAMES"),
+            ("recover_good_frames", "FRONTEND_HEALTH_RECOVER_GOOD_FRAMES"),
+        ):
+            if field in frontend_health:
+                environment[variable] = str(frontend_health[field]).lower()
+
     # Loop closure is off in every shipped config, so a case that means to
     # exercise it has to turn it on explicitly.
     loop_closure = case.get("loop_closure")

@@ -53,6 +53,7 @@ class FrameHealthGate {
   // it applies to. The gate never interprets these values.
   struct RecoveryEvidence {
     std::uint64_t session = 0;
+    std::uint64_t old_trajectory = 0;
     std::uint64_t trajectory = 0;
     double timestamp_seconds = 0.0;
     bool first_durable_keyframe_pending = false;
@@ -98,6 +99,8 @@ class FrameHealthGate {
   // the relocalization query by the dropout that triggered recovery.
   void resetTimingBaseline();
   void beginVerifying();
+  void beginRelocalizing();
+  void markLost();
 
   void setRecoveryEvidence(std::optional<RecoveryEvidence> evidence);
   [[nodiscard]] std::optional<RecoveryEvidence> recoveryEvidence() const;

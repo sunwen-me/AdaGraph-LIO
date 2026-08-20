@@ -213,11 +213,11 @@ bool PointLIOPipeline::commitPreparedRecoveredTrajectory() {
 
   session_id_ = start.session_id;
   trajectory_id_ = start.trajectory_id;
-  latest_recovery_evidence_ = RecoveryEvidence{
-      start.session_id,
-      old_trajectory_id,
-      start.trajectory_id,
-      start.T_map_base.timestamp,
+  const auto recovery_evidence = FrameHealthGate::RecoveryEvidence{
+      start.session_id.value(),
+      old_trajectory_id.value(),
+      start.trajectory_id.value(),
+      start.T_map_base.timestamp.seconds(),
       true,
   };
   keyframe_policy_ = std::move(prepared_recovery_->keyframe_policy);
@@ -227,17 +227,18 @@ bool PointLIOPipeline::commitPreparedRecoveredTrajectory() {
       start.covariance,
       start.score,
   };
-  recovery_retry_cooldown_frames_ = 0;
   global_alignment_mailbox_.reset();
   // The first post-recovery frame may legitimately be separated from the
   // relocalization query by the sensor dropout that triggered recovery. Let
   // that frame establish the new timestamp baseline; continuity checking
   // resumes from the second post-recovery frame.
-  last_frontend_wall_time_ = std::chrono::steady_clock::now();
-  last_frontend_timeout_observation_.reset();
-  last_frontend_timestamp_seconds_.reset();
-  if (frontend_health_monitor_) {
-    frontend_health_monitor_->beginVerifying();
+  // One transaction: identity, alignment and health must change together, or a
+  // frame could see the new trajectory id against stale health.
+  if (health_gate_) {
+    health_gate_->setRecoveryEvidence(recovery_evidence);
+    health_gate_->clearRetryCooldown();
+    health_gate_->resetTimingBaseline();
+    health_gate_->beginVerifying();
   }
   if (callbacks_.frontend.set_frontend_local_map_write_enabled) {
     try {
@@ -269,19 +270,16 @@ void PointLIOPipeline::abortPreparedRecoveredTrajectory() noexcept {
 
 void PointLIOPipeline::beginRelocalizationAttempt() noexcept {
   std::lock_guard<std::mutex> lock(recovery_transition_mutex_);
-  if (frontend_health_monitor_) {
-    frontend_health_monitor_->beginRelocalizing();
+  if (health_gate_) {
+    health_gate_->beginRelocalizing();
   }
-  recovery_retry_cooldown_frames_ = 0;
 }
 
 void PointLIOPipeline::markRecoveryAttemptFailed() noexcept {
   std::lock_guard<std::mutex> lock(recovery_transition_mutex_);
-  if (frontend_health_monitor_) {
-    frontend_health_monitor_->markLost();
+  if (health_gate_) {
+    health_gate_->markLost();
   }
-  recovery_retry_cooldown_frames_ =
-      runtime_config_.frontend_health.recovery_cooldown_frames;
 }
 
 bool PointLIOPipeline::submitLoopClosureConstraint(
@@ -361,9 +359,13 @@ void PointLIOPipeline::init(
                                 *error);
   }
   runtime_config_ = std::move(runtime_config);
-  frontend_health_monitor_ =
-      std::make_unique<hybrid_slam::frontend::FrontendHealthMonitor>(
-          runtime_config_.frontend_health);
+  health_gate_ = std::make_unique<FrameHealthGate>(
+      runtime_config_.frontend_health,
+      FrameHealthGate::FrontendControls{
+          callbacks_.frontend.set_frontend_local_map_write_enabled,
+          callbacks_.frontend.set_frontend_recovery_query_mode,
+          callbacks_.frontend.clear_frontend_online_local_map,
+      });
   LOG(INFO) << hybrid_slam::logging::kGreen
             << " ---> [FrontendHealth]: enabled="
             << runtime_config_.frontend_health.enabled
@@ -593,7 +595,8 @@ void PointLIOPipeline::finish() {
               << stats.map_memory.unique_keyframe_cloud_logical_bytes << "/"
               << stats.map_memory.unique_keyframe_cloud_backing_bytes
               << hybrid_slam::logging::kReset;
-    if (latest_recovery_evidence_) {
+    if (const auto evidence = health_gate_ ? health_gate_->recoveryEvidence()
+                                           : std::nullopt) {
       const auto snapshot = backend_scheduler_->mapSnapshot();
       const auto has_trajectory = [&snapshot](
                                       const hybrid_slam::common::TrajectoryId id) {
@@ -612,13 +615,15 @@ void PointLIOPipeline::finish() {
                          }))
                    : 0U;
       LOG(INFO) << " ---> [PointLIORecovery]: final_snapshot old_trajectory="
-                << latest_recovery_evidence_->old_trajectory_id.value()
+                << evidence->old_trajectory
                 << ", new_trajectory="
-                << latest_recovery_evidence_->new_trajectory_id.value()
+                << evidence->trajectory
                 << ", old_present="
-                << has_trajectory(latest_recovery_evidence_->old_trajectory_id)
+                << has_trajectory(
+                       hybrid_slam::common::TrajectoryId(evidence->old_trajectory))
                 << ", new_present="
-                << has_trajectory(latest_recovery_evidence_->new_trajectory_id)
+                << has_trajectory(
+                       hybrid_slam::common::TrajectoryId(evidence->trajectory))
                 << ", relocalization_constraints="
                 << relocalization_constraints;
     }
@@ -660,8 +665,7 @@ void PointLIOPipeline::finish() {
   // not_enqueued count means relocalization results were malformed.
   LOG(INFO) << hybrid_slam::logging::kGreen
             << " ---> [FrontendWatchdog]: timeout_observations_skipped="
-            << frontend_timeout_observations_skipped_.load(
-                   std::memory_order_relaxed)
+            << (health_gate_ ? health_gate_->timeoutObservationsSkipped() : 0)
             << ", alignment_updates_not_enqueued="
             << alignment_updates_not_enqueued_.load(std::memory_order_relaxed)
             << hybrid_slam::logging::kReset;
@@ -717,9 +721,6 @@ void PointLIOPipeline::reset() {
   accepted_keyframe_count_ = 0;
   next_global_alignment_version_ = 1;
   last_backend_alignment_snapshot_version_ = 0;
-  last_frontend_timestamp_seconds_.reset();
-  last_frontend_wall_time_.reset();
-  last_frontend_timeout_observation_.reset();
   last_relocalization_query_.reset();
   resetRecoveryQueryAccumulator();
   grid_count_ = 0;
@@ -727,10 +728,9 @@ void PointLIOPipeline::reset() {
   alignment_updates_committed_ = 0;
   alignment_updates_rejected_ = 0;
   global_alignment_mailbox_.reset();
-  frontend_health_monitor_.reset();
+  health_gate_.reset();
   pending_recovery_constraint_.reset();
   prepared_recovery_.reset();
-  recovery_retry_cooldown_frames_ = 0;
   // Discarding the facade drains the old scheduler and fails any outstanding
   // future, then lets the next save rebuild it. The previous code instead
   // cleared the finished flag and the request counter in place, which is the
@@ -868,15 +868,17 @@ bool PointLIOPipeline::submitGraphKeyFrame(
                << static_cast<int>(status) << hybrid_slam::logging::kReset;
     return false;
   }
-  if (latest_recovery_evidence_ &&
-      latest_recovery_evidence_->first_durable_keyframe_pending &&
-      trajectory_id_ == latest_recovery_evidence_->new_trajectory_id) {
-    LOG(INFO) << " ---> [PointLIORecovery]: first_durable_keyframe="
-              << next_graph_keyframe_id_ - 1 << ", trajectory="
-              << trajectory_id_.value() << ", session="
-              << session_id_.value() << ", timestamp="
-              << timestamp_seconds;
-    latest_recovery_evidence_->first_durable_keyframe_pending = false;
+  if (health_gate_) {
+    if (const auto evidence = health_gate_->recoveryEvidence();
+        evidence && evidence->first_durable_keyframe_pending &&
+        trajectory_id_.value() == evidence->trajectory) {
+      LOG(INFO) << " ---> [PointLIORecovery]: first_durable_keyframe="
+                << next_graph_keyframe_id_ - 1 << ", trajectory="
+                << trajectory_id_.value() << ", session="
+                << session_id_.value() << ", timestamp="
+                << timestamp_seconds;
+      health_gate_->clearFirstDurableKeyframePending();
+    }
   }
   ++accepted_keyframe_count_;
   return true;
@@ -885,32 +887,16 @@ bool PointLIOPipeline::submitGraphKeyFrame(
 hybrid_slam::frontend::FrontendHealthDecision
 PointLIOPipeline::updateFrontendHealth(const PointLIOOutputFrame& frame,
                                        const IMUData& latest_imu) {
-  if (!frontend_health_monitor_) {
+  if (!health_gate_) {
     return {};
   }
 
-  last_frontend_wall_time_ = std::chrono::steady_clock::now();
-  last_frontend_timeout_observation_.reset();
-
+  // Only the extraction stays here: the Hessian, gradient and matching-point
+  // layout are Point-LIO's, so turning a vendor frame into a typed observation
+  // is adapter work. Continuity judgement and the decision itself belong to the
+  // gate, which owns the previous timestamp.
   hybrid_slam::frontend::FrontendHealthObservation observation;
   observation.imu_valid = latest_imu.valid();
-  const double timestamp = frame.state.timestamp;
-  const auto& health_config = frontend_health_monitor_->config();
-  const auto previous_timestamp = last_frontend_timestamp_seconds_;
-  double timestamp_delta = std::numeric_limits<double>::quiet_NaN();
-  observation.timestamp_continuous = std::isfinite(timestamp);
-  if (observation.timestamp_continuous &&
-      last_frontend_timestamp_seconds_) {
-    timestamp_delta = timestamp - *last_frontend_timestamp_seconds_;
-    observation.timestamp_continuous =
-        timestamp_delta > 0.0 &&
-        timestamp_delta <= health_config.max_timestamp_gap_s;
-  }
-  if (std::isfinite(timestamp)) {
-    last_frontend_timestamp_seconds_ = timestamp;
-  } else {
-    last_frontend_timestamp_seconds_.reset();
-  }
   observation.effective_point_count = frame.effective_point_updates;
   if (!frame.matching_points_odom.empty()) {
     observation.inlier_ratio =
@@ -932,102 +918,9 @@ PointLIOPipeline::updateFrontendHealth(const PointLIOOutputFrame& frame,
     }
   }
 
-  const auto previous_state = frontend_health_monitor_->state();
-  const auto decision = frontend_health_monitor_->observe(observation);
-  if (previous_state ==
-      hybrid_slam::frontend::FrontendHealthState::kVerifying) {
-    LOG(INFO) << " ---> [PointLIORecovery]: verification_frame timestamp="
-              << std::setprecision(17) << timestamp
-              << ", good=" << decision.observation_good
-              << ", resulting_state="
-              << FrontendHealthStateName(decision.state)
-              << ", good_frames=" << decision.good_frames
-              << ", bad_frames=" << decision.bad_frames
-              << ", grace_remaining="
-              << decision.verification_grace_frames_remaining
-              << ", effective_points=" << observation.effective_point_count
-              << ", inlier_ratio=" << observation.inlier_ratio
-              << ", rank=" << observation.effective_rank
-              << ", condition_number=" << observation.condition_number;
-  }
-  if (previous_state ==
-          hybrid_slam::frontend::FrontendHealthState::kVerifying &&
-      decision.state == hybrid_slam::frontend::FrontendHealthState::kLost) {
-    LOG(WARNING) << " ---> [FrontendHealth]: verification failed source=frame"
-                 << ", reasons="
-                 << DescribeHealthFailure(observation, health_config)
-                 << ", timestamp=" << timestamp
-                 << ", previous_timestamp="
-                 << (previous_timestamp ? *previous_timestamp
-                                        : std::numeric_limits<double>::quiet_NaN())
-                 << ", timestamp_delta=" << timestamp_delta
-                 << ", effective_points="
-                 << observation.effective_point_count
-                 << ", inlier_ratio=" << observation.inlier_ratio
-                 << ", rank=" << observation.effective_rank
-                 << ", condition_number=" << observation.condition_number
-                 << hybrid_slam::logging::kReset;
-  }
-  applyFrontendHealthDecision(previous_state, decision);
-  return decision;
+  return health_gate_->observeFrame(observation, frame.state.timestamp);
 }
 
-void PointLIOPipeline::applyFrontendHealthDecision(
-    const hybrid_slam::frontend::FrontendHealthState previous_state,
-    const hybrid_slam::frontend::FrontendHealthDecision& decision) {
-  if (callbacks_.frontend.set_frontend_local_map_write_enabled) {
-    callbacks_.frontend.set_frontend_local_map_write_enabled(
-        decision.local_map_write_enabled);
-  }
-  if (callbacks_.frontend.set_frontend_recovery_query_mode) {
-    callbacks_.frontend.set_frontend_recovery_query_mode(
-        decision.state == hybrid_slam::frontend::FrontendHealthState::kLost);
-  }
-  if (previous_state ==
-          hybrid_slam::frontend::FrontendHealthState::kVerifying &&
-      decision.state == hybrid_slam::frontend::FrontendHealthState::kLost &&
-      callbacks_.frontend.clear_frontend_online_local_map) {
-    callbacks_.frontend.clear_frontend_online_local_map();
-  }
-  if (previous_state ==
-          hybrid_slam::frontend::FrontendHealthState::kVerifying &&
-      decision.state == hybrid_slam::frontend::FrontendHealthState::kLost) {
-    // A failed verification is a recovery attempt failure, not an ordinary
-    // tracking frame. Keep the provisional layer rollbackable and wait for a
-    // materially newer query before submitting another expensive candidate.
-    recovery_retry_cooldown_frames_ =
-        runtime_config_.frontend_health.recovery_cooldown_frames;
-    if (latest_recovery_evidence_) {
-      LOG(WARNING) << " ---> [PointLIORecovery]: verification_rollback "
-                   << "trajectory="
-                   << latest_recovery_evidence_->new_trajectory_id.value()
-                   << ", first_durable_keyframe_pending="
-                   << latest_recovery_evidence_->first_durable_keyframe_pending;
-    }
-  }
-  if (previous_state ==
-          hybrid_slam::frontend::FrontendHealthState::kVerifying &&
-      decision.state == hybrid_slam::frontend::FrontendHealthState::kRecovered &&
-      latest_recovery_evidence_) {
-    LOG(INFO) << " ---> [PointLIORecovery]: verification_committed trajectory="
-              << latest_recovery_evidence_->new_trajectory_id.value()
-              << ", session=" << latest_recovery_evidence_->session_id.value()
-              << ", timestamp="
-              << latest_recovery_evidence_->timestamp.seconds();
-  }
-  if (decision.transitioned) {
-    LOG(INFO) << hybrid_slam::logging::kGreen
-              << " ---> [FrontendHealth]: "
-              << FrontendHealthStateName(previous_state) << " -> "
-              << FrontendHealthStateName(decision.state)
-              << ", good/bad/cooldown=" << decision.good_frames << "/"
-              << decision.bad_frames << "/" << decision.cooldown_frames
-              << ", local_map_write=" << decision.local_map_write_enabled
-              << ", global_keyframe_write="
-              << decision.global_keyframe_write_enabled
-              << hybrid_slam::logging::kReset;
-  }
-}
 
 void PointLIOPipeline::maybeRequestSubmapRecovery(
     const hybrid_slam::frontend::FrontendHealthState state,
@@ -1037,16 +930,16 @@ void PointLIOPipeline::maybeRequestSubmapRecovery(
       !callbacks_.recovery.request_submap_recovery || !query || !query->valid()) {
     return;
   }
-  if (recovery_retry_cooldown_frames_ > 0) {
-    --recovery_retry_cooldown_frames_;
+  if (health_gate_ && health_gate_->retryCooldownFrames() > 0) {
+    health_gate_->decrementRetryCooldown();
     return;
   }
   const auto snapshot = mapSnapshot();
   if (!snapshot) {
     return;
   }
-  if (frontend_health_monitor_) {
-    frontend_health_monitor_->beginRelocalizing();
+  if (health_gate_) {
+    health_gate_->beginRelocalizing();
   }
   callbacks_.recovery.request_submap_recovery(*query, snapshot);
   resetRecoveryQueryAccumulator();
@@ -1125,71 +1018,26 @@ void PointLIOPipeline::resetRecoveryQueryAccumulator() noexcept {
 }
 
 void PointLIOPipeline::observeFrontendTimeout() {
-  // This runs on the ROS callback group that also owns sensor ingress and the
+  // Runs on the ROS callback group that also owns sensor ingress and the
   // frontend pump, so it must never wait for the downstream worker. Failing to
-  // acquire the lock means a frame is being processed right now, which is
-  // itself evidence that the frontend is alive; the next tick re-evaluates the
-  // gap. Blocking here would stall IMU/LiDAR subscriptions behind whatever the
-  // downstream worker is doing, including a full backend submission queue.
-  std::unique_lock<std::mutex> lock(recovery_transition_mutex_, std::try_to_lock);
+  // take the lock means a frame is in flight, which is itself evidence the
+  // frontend is alive; the next tick re-evaluates the gap. Blocking here would
+  // stall IMU and LiDAR subscriptions behind whatever that worker is doing,
+  // including a backend submission waiting on queue capacity. This obligation
+  // stays at the call site because the callback group it protects is only
+  // visible here.
+  std::unique_lock<std::mutex> lock(recovery_transition_mutex_,
+                                    std::try_to_lock);
   if (!lock.owns_lock()) {
-    ++frontend_timeout_observations_skipped_;
+    if (health_gate_) {
+      health_gate_->noteTimeoutObservationSkipped();
+    }
     return;
   }
-  if (!initialized_.load(std::memory_order_acquire) ||
-      !frontend_health_monitor_ ||
-      !frontend_health_monitor_->config().enabled ||
-      !last_frontend_wall_time_) {
+  if (!initialized_.load(std::memory_order_acquire) || !health_gate_) {
     return;
   }
-
-  const auto now = std::chrono::steady_clock::now();
-  const auto timeout = std::chrono::duration<double>(
-      now - *last_frontend_wall_time_).count();
-  const double max_gap = frontend_health_monitor_->config().max_timestamp_gap_s;
-  if (!std::isfinite(timeout) || timeout < max_gap) {
-    return;
-  }
-  if (last_frontend_timeout_observation_ &&
-      std::chrono::duration<double>(now -
-                                    *last_frontend_timeout_observation_)
-              .count() < max_gap) {
-    return;
-  }
-  last_frontend_timeout_observation_ = now;
-
-  const auto previous_state = frontend_health_monitor_->state();
-  hybrid_slam::frontend::FrontendHealthObservation observation;
-  observation.has_information = false;
-  observation.imu_valid = false;
-  observation.timestamp_continuous = false;
-  auto decision = frontend_health_monitor_->observe(observation);
-  const double dropout_timeout =
-      frontend_health_monitor_->config().lidar_dropout_lost_timeout_s;
-  const bool can_force_loss =
-      previous_state == hybrid_slam::frontend::FrontendHealthState::kTracking ||
-      previous_state == hybrid_slam::frontend::FrontendHealthState::kSuspect ||
-      previous_state == hybrid_slam::frontend::FrontendHealthState::kRecovered ||
-      previous_state == hybrid_slam::frontend::FrontendHealthState::kVerifying;
-  if (can_force_loss && timeout >= dropout_timeout &&
-      decision.state != hybrid_slam::frontend::FrontendHealthState::kLost) {
-    frontend_health_monitor_->markLost();
-    decision = frontend_health_monitor_->observe(observation);
-    decision.transitioned = true;
-    LOG(WARNING) << " ---> [FrontendHealth]: LiDAR dropout forced LOST"
-                 << " elapsed_s=" << timeout
-                 << ", timeout_s=" << dropout_timeout
-                 << hybrid_slam::logging::kReset;
-  }
-  if (previous_state ==
-          hybrid_slam::frontend::FrontendHealthState::kVerifying &&
-      decision.state == hybrid_slam::frontend::FrontendHealthState::kLost) {
-    LOG(WARNING) << " ---> [FrontendHealth]: verification failed "
-                 << "source=watchdog, elapsed_s=" << timeout
-                 << ", max_gap_s=" << max_gap
-                 << hybrid_slam::logging::kReset;
-  }
-  applyFrontendHealthDecision(previous_state, decision);
+  (void)health_gate_->observeTimeout();
 }
 
 void PointLIOPipeline::submitPendingRecoveryConstraint(

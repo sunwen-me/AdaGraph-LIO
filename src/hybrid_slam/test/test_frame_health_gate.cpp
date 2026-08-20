@@ -144,7 +144,7 @@ TEST(FrameHealthGate, VerificationFailureClearsProvisionalMapAndStartsCooldown) 
   gate.observeFrame(GoodObservation(), 100.0);
   gate.beginVerifying();
   EXPECT_EQ(gate.state(), FrontendHealthState::kVerifying);
-  gate.setRecoveryEvidence(FrameHealthGate::RecoveryEvidence{1, 4, 100.0, true});
+  gate.setRecoveryEvidence(FrameHealthGate::RecoveryEvidence{1, 3, 4, 100.0, true});
 
   double timestamp = 100.1;
   for (int index = 0; index < 4 && gate.state() != FrontendHealthState::kLost;
@@ -178,7 +178,7 @@ TEST(FrameHealthGate, CarriesRecoveryEvidenceWithoutInterpretingIt) {
   FrameHealthGate gate(MakeConfig(), log.controls());
   EXPECT_FALSE(gate.recoveryEvidence().has_value());
   gate.setRecoveryEvidence(
-      FrameHealthGate::RecoveryEvidence{7, 9, 123.5, true});
+      FrameHealthGate::RecoveryEvidence{7, 8, 9, 123.5, true});
   auto evidence = gate.recoveryEvidence();
   ASSERT_TRUE(evidence.has_value());
   EXPECT_EQ(evidence->session, 7U);

@@ -31,6 +31,7 @@
 #include "hybrid_slam/sensor/point_cloud_view.h"
 #include "lio/prior_map_localization.h"
 #include "lio/system/point_lio_runtime_config.h"
+#include "lio/system/frame_health_gate.h"
 #include "lio/system/map_save_facade.h"
 #include "lio/system/point_lio_output_frame.h"
 
@@ -205,12 +206,12 @@ class PointLIOPipeline {
       const PointLIOOutputFrame& frame, const BASIC::SE3& odom_body,
       const BASIC::SE3& last_keyframe_pose,
       const hybrid_slam::adapter::PclCloudPtr& matching_cloud, const IMUData& latest_imu);
+  // Extracts a typed observation from the vendor frame and hands it to the
+  // health gate. The extraction stays here because the Hessian, gradient and
+  // matching-point layout are Point-LIO's.
   [[nodiscard]] hybrid_slam::frontend::FrontendHealthDecision
   updateFrontendHealth(const PointLIOOutputFrame& frame,
                        const IMUData& latest_imu);
-  void applyFrontendHealthDecision(
-      hybrid_slam::frontend::FrontendHealthState previous_state,
-      const hybrid_slam::frontend::FrontendHealthDecision& decision);
   void maybeRequestSubmapRecovery(
       hybrid_slam::frontend::FrontendHealthState state,
       const std::optional<hybrid_slam::localization::RelocalizationQuery>&
@@ -294,8 +295,10 @@ class PointLIOPipeline {
   std::unique_ptr<hybrid_slam::backend::BackendScheduler> backend_scheduler_;
   std::unique_ptr<hybrid_slam::backend::OdometryCovarianceEstimator>
       covariance_estimator_;
-  std::unique_ptr<hybrid_slam::frontend::FrontendHealthMonitor>
-      frontend_health_monitor_;
+  // Frontend health, dropout timing, the retry cooldown and the recovery
+  // evidence live here. FrameHealthGate has no lock of its own: every call
+  // below happens with recovery_transition_mutex_ already held.
+  std::unique_ptr<FrameHealthGate> health_gate_;
   // Map saving owns its own scheduler, request numbering, promise table and
   // internal lock order; see MapSaveFacade. Only the pointer is guarded here,
   // because reset() replaces the facade while other threads may be saving.
@@ -313,11 +316,6 @@ class PointLIOPipeline {
   hybrid_slam::common::TrajectoryId trajectory_id_{1};
   std::uint64_t next_global_alignment_version_ = 1;
   std::uint64_t last_backend_alignment_snapshot_version_ = 0;
-  std::optional<double> last_frontend_timestamp_seconds_;
-  std::optional<std::chrono::steady_clock::time_point>
-      last_frontend_wall_time_;
-  std::optional<std::chrono::steady_clock::time_point>
-      last_frontend_timeout_observation_;
   std::optional<hybrid_slam::localization::RelocalizationQuery>
       last_relocalization_query_;
   struct RecoveryQueryAccumulator {
@@ -336,19 +334,10 @@ class PointLIOPipeline {
     double score = 0.0;
   };
   std::optional<PendingRecoveryConstraint> pending_recovery_constraint_;
-  struct RecoveryEvidence {
-    hybrid_slam::common::SessionId session_id;
-    hybrid_slam::common::TrajectoryId old_trajectory_id;
-    hybrid_slam::common::TrajectoryId new_trajectory_id;
-    hybrid_slam::common::Timestamp timestamp;
-    bool first_durable_keyframe_pending = false;
-  };
-  std::optional<RecoveryEvidence> latest_recovery_evidence_;
   std::optional<PreparedRecoveredTrajectory> prepared_recovery_;
   // Failed background candidates must not cause one expensive relocalization
   // submission per frontend frame. Access is serialized by
   // recovery_transition_mutex_.
-  std::size_t recovery_retry_cooldown_frames_ = 0;
   mutable std::mutex recovery_transition_mutex_;
   // Unbounded frame counters used only for output decimation. Signed types
   // would overflow into undefined behaviour on a long-running session.
@@ -362,9 +351,6 @@ class PointLIOPipeline {
   // the mailbox is latest-only, so a rejection is not the same as a
   // supersession and must not be silently equivalent to success.
   std::atomic<std::uint64_t> alignment_updates_not_enqueued_{0};
-  // Watchdog ticks that declined to wait for the downstream worker. A steadily
-  // rising value means frame processing routinely outlives the health timer.
-  std::atomic<std::uint64_t> frontend_timeout_observations_skipped_{0};
 };
 
 }  // namespace LI2Sup

@@ -198,6 +198,16 @@ void FrameHealthGate::beginVerifying() {
   monitor_.beginVerifying();
 }
 
+void FrameHealthGate::beginRelocalizing() {
+  monitor_.beginRelocalizing();
+  retry_cooldown_frames_ = 0;
+}
+
+void FrameHealthGate::markLost() {
+  monitor_.markLost();
+  retry_cooldown_frames_ = config_.recovery_cooldown_frames;
+}
+
 void FrameHealthGate::setRecoveryEvidence(
     std::optional<RecoveryEvidence> evidence) {
   recovery_evidence_ = std::move(evidence);
