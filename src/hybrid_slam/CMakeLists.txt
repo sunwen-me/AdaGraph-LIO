@@ -708,6 +708,15 @@ if(BUILD_TESTING)
   )
 
   ament_add_gtest(
+    test_global_alignment_publisher
+    test/test_global_alignment_publisher.cpp
+  )
+  target_link_libraries(test_global_alignment_publisher
+    hybrid_slam_point_lio_pipeline
+    Eigen3::Eigen
+  )
+
+  ament_add_gtest(
     test_pcl_submap_relocalizer
     test/test_pcl_submap_relocalizer.cpp
   )
