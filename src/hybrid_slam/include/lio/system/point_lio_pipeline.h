@@ -32,6 +32,7 @@
 #include "lio/prior_map_localization.h"
 #include "lio/system/point_lio_runtime_config.h"
 #include "lio/system/frame_health_gate.h"
+#include "lio/system/global_alignment_publisher.h"
 #include "lio/system/map_save_facade.h"
 #include "lio/system/point_lio_output_frame.h"
 
@@ -258,8 +259,8 @@ class PointLIOPipeline {
       const std::vector<MapObservation>& map_observations);
   void submitPendingRecoveryConstraint(
       const hybrid_slam::geometry::StampedTransform3d& T_odom_base);
-  void enqueueRelocalizationUpdate(
-      const hybrid_slam::localization::RelocalizationUpdate& update);
+  // Drains the alignment mailbox on the downstream worker. Kept on the pipeline
+  // because the frame loop calls it at two points whose ordering matters.
   void applyPendingRelocalizationUpdate();
   [[nodiscard]] bool currentMapToOdom(BASIC::SE3& T_map_odom) const;
   [[nodiscard]] bool commitGlobalAlignment(
@@ -305,8 +306,10 @@ class PointLIOPipeline {
   mutable std::mutex map_io_state_mutex_;
   std::shared_ptr<MapSaveFacade> map_save_;
   std::unique_ptr<PriorMapLocalization> prior_map_localization_;
-  std::unique_ptr<hybrid_slam::system::GlobalAlignmentState>
-      global_alignment_state_;
+  // Global alignment: mailbox, versioned state and the map->odom
+  // notification. Unlike the health gate this one holds its own lock; it
+  // is written by the relocalization worker and the downstream worker.
+  std::unique_ptr<GlobalAlignmentPublisher> alignment_publisher_;
   hybrid_slam::frontend::FrontendConfig frontend_config_;
   std::atomic<bool> initialized_{false};
   std::atomic<bool> finished_{false};
@@ -314,7 +317,6 @@ class PointLIOPipeline {
   std::uint64_t accepted_keyframe_count_ = 0;
   hybrid_slam::common::SessionId session_id_{1};
   hybrid_slam::common::TrajectoryId trajectory_id_{1};
-  std::uint64_t next_global_alignment_version_ = 1;
   std::uint64_t last_backend_alignment_snapshot_version_ = 0;
   std::optional<hybrid_slam::localization::RelocalizationQuery>
       last_relocalization_query_;
@@ -344,13 +346,6 @@ class PointLIOPipeline {
   std::uint64_t grid_count_ = 0;
   std::uint64_t visualization_count_ = 0;
 
-  hybrid_slam::system::GlobalAlignmentUpdateMailbox global_alignment_mailbox_;
-  std::uint64_t alignment_updates_committed_ = 0;
-  std::uint64_t alignment_updates_rejected_ = 0;
-  // Relocalization results the mailbox refused. They are otherwise invisible:
-  // the mailbox is latest-only, so a rejection is not the same as a
-  // supersession and must not be silently equivalent to success.
-  std::atomic<std::uint64_t> alignment_updates_not_enqueued_{0};
 };
 
 }  // namespace LI2Sup

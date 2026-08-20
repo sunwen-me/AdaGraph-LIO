@@ -227,7 +227,6 @@ bool PointLIOPipeline::commitPreparedRecoveredTrajectory() {
       start.covariance,
       start.score,
   };
-  global_alignment_mailbox_.reset();
   // The first post-recovery frame may legitimately be separated from the
   // relocalization query by the sensor dropout that triggered recovery. Let
   // that frame establish the new timestamp baseline; continuity checking
@@ -405,8 +404,8 @@ void PointLIOPipeline::init(
   if (runtime_config_.save_map) {
     ensureMapIo();
   }
-  global_alignment_state_ =
-      std::make_unique<hybrid_slam::system::GlobalAlignmentState>();
+  alignment_publisher_ = std::make_unique<GlobalAlignmentPublisher>(
+      callbacks_.alignment.set_map_to_odom);
   prior_map_localization_ = std::make_unique<PriorMapLocalization>();
   const bool localization_active = prior_map_localization_->init(
       [publish = callbacks_.publication.publish_global_map](const PclCloudPtr& prior_map) {
@@ -417,7 +416,11 @@ void PointLIOPipeline::init(
       },
       frontend_config_.T_base_imu,
       [this](const hybrid_slam::localization::RelocalizationUpdate& update) {
-        enqueueRelocalizationUpdate(update);
+        // Runs on the relocalization worker; the publisher's mailbox is the
+        // thread boundary.
+        if (alignment_publisher_) {
+          alignment_publisher_->submit(update);
+        }
       },
       runtime_config_.prior_map.relocalization,
       runtime_config_.prior_map.kiss_matcher,
@@ -441,10 +444,10 @@ PointLIOPipeline::mapSnapshot() const noexcept {
 
 std::shared_ptr<const hybrid_slam::system::GlobalAlignmentSnapshot>
 PointLIOPipeline::alignmentSnapshot() const noexcept {
-  if (!global_alignment_state_) {
+  if (!alignment_publisher_) {
     return {};
   }
-  return global_alignment_state_->snapshot();
+  return alignment_publisher_->snapshot();
 }
 
 std::shared_ptr<const hybrid_slam::localization::LocalizationMap>
@@ -628,8 +631,8 @@ void PointLIOPipeline::finish() {
                 << relocalization_constraints;
     }
   }
-  if (global_alignment_state_) {
-    const auto alignment = global_alignment_state_->snapshot();
+  if (alignment_publisher_) {
+    const auto alignment = alignment_publisher_->snapshot();
     hybrid_slam::geometry::RigidTransform3d published_map_to_odom;
     if (alignment && callbacks_.alignment.get_map_to_odom &&
         callbacks_.alignment.get_map_to_odom(published_map_to_odom)) {
@@ -663,20 +666,20 @@ void PointLIOPipeline::finish() {
   // they are only meaningful as an end-of-session total. A rising skipped count
   // means frame processing routinely outlives the health timer; a non-zero
   // not_enqueued count means relocalization results were malformed.
+  const auto alignment_stats = alignment_publisher_
+                                   ? alignment_publisher_->stats()
+                                   : GlobalAlignmentPublisher::Stats{};
   LOG(INFO) << hybrid_slam::logging::kGreen
             << " ---> [FrontendWatchdog]: timeout_observations_skipped="
             << (health_gate_ ? health_gate_->timeoutObservationsSkipped() : 0)
             << ", alignment_updates_not_enqueued="
-            << alignment_updates_not_enqueued_.load(std::memory_order_relaxed)
-            << hybrid_slam::logging::kReset;
-  const auto mailbox_stats = global_alignment_mailbox_.stats();
+            << alignment_stats.not_enqueued << hybrid_slam::logging::kReset;
   LOG(INFO) << hybrid_slam::logging::kGreen
             << " ---> [GlobalAlignmentQueue]: enqueued/replaced/committed/"
                "rejected="
-            << mailbox_stats.submitted << "/"
-            << mailbox_stats.replaced << "/"
-            << alignment_updates_committed_ << "/"
-            << (alignment_updates_rejected_ + mailbox_stats.invalid)
+            << alignment_stats.mailbox_submitted << "/"
+            << alignment_stats.mailbox_replaced << "/"
+            << alignment_stats.committed << "/" << alignment_stats.rejected
             << hybrid_slam::logging::kReset;
   // Sample after all frontend, localization and backend workers have drained.
   // Map IO intentionally remains outside this baseline because its temporary
@@ -716,18 +719,19 @@ void PointLIOPipeline::reset() {
   backend_scheduler_.reset();
   covariance_estimator_.reset();
   prior_map_localization_.reset();
-  global_alignment_state_.reset();
+  alignment_publisher_.reset();
   next_graph_keyframe_id_ = 0;
   accepted_keyframe_count_ = 0;
-  next_global_alignment_version_ = 1;
   last_backend_alignment_snapshot_version_ = 0;
   last_relocalization_query_.reset();
   resetRecoveryQueryAccumulator();
   grid_count_ = 0;
   visualization_count_ = 0;
-  alignment_updates_committed_ = 0;
-  alignment_updates_rejected_ = 0;
-  global_alignment_mailbox_.reset();
+  if (alignment_publisher_) {
+    // Discard, not apply: a relocalization computed against the old trajectory
+    // must not be committed onto the new identity.
+    alignment_publisher_->discardPending();
+  }
   health_gate_.reset();
   pending_recovery_constraint_.reset();
   prepared_recovery_.reset();
@@ -1139,76 +1143,33 @@ void PointLIOPipeline::submitMapObservations(
   }
 }
 
-void PointLIOPipeline::enqueueRelocalizationUpdate(
-    const hybrid_slam::localization::RelocalizationUpdate& update) {
-  // Called from the relocalization worker. A refused submission means the
-  // update was malformed, not merely superseded, so it must be visible.
-  if (!global_alignment_mailbox_.submit(update)) {
-    const auto total = alignment_updates_not_enqueued_.fetch_add(
-                           1, std::memory_order_relaxed) +
-                       1;
-    LOG(WARNING) << hybrid_slam::logging::kYellow
-                 << " ---> [GlobalAlignment]: relocalization update refused by"
-                    " mailbox, not_enqueued_total="
-                 << total << hybrid_slam::logging::kReset;
-  }
-}
+
+
 
 bool PointLIOPipeline::commitGlobalAlignment(
     const hybrid_slam::geometry::StampedTransform3d& T_map_base,
     const hybrid_slam::geometry::StampedTransform3d& T_odom_base,
-    hybrid_slam::system::GlobalAlignmentSource source,
-    double score) {
-  if (!global_alignment_state_ ||
-      !global_alignment_state_->commit(next_global_alignment_version_++,
-                                       T_map_base, T_odom_base, source,
-                                       score)) {
-    ++alignment_updates_rejected_;
-    return false;
-  }
-  ++alignment_updates_committed_;
-  const auto alignment = global_alignment_state_->snapshot();
-  if (alignment && callbacks_.alignment.set_map_to_odom) {
-    try {
-      callbacks_.alignment.set_map_to_odom(alignment->T_map_odom.T_target_source);
-    } catch (...) {
-      // Publication is an external side effect. Keep the typed alignment
-      // committed; the next snapshot/TF publication can repair a consumer
-      // that rejected this notification.
-      LOG(ERROR) << hybrid_slam::logging::kRed
-                 << " ---> [GlobalAlignmentState]: map->odom callback threw"
-                 << hybrid_slam::logging::kReset;
-    }
-  }
-  return true;
+    const hybrid_slam::system::GlobalAlignmentSource source,
+    const double score) {
+  return alignment_publisher_ &&
+         alignment_publisher_->commit(T_map_base, T_odom_base, source, score);
 }
 
 void PointLIOPipeline::applyPendingRelocalizationUpdate() {
-  auto update = global_alignment_mailbox_.takeLatest();
-  if (!update) {
-    return;
+  if (alignment_publisher_) {
+    (void)alignment_publisher_->applyPending();
   }
-  const auto& result = update->result;
-  if (!update->valid()) {
-    ++alignment_updates_rejected_;
-    return;
-  }
-  const bool committed = commitGlobalAlignment(
-      *result.T_map_base, update->T_odom_base,
-      hybrid_slam::system::GlobalAlignmentSource::kRelocalization,
-      result.fitness);
-  (void)committed;
 }
 
 bool PointLIOPipeline::currentMapToOdom(SE3& T_map_odom) const {
-  if (!global_alignment_state_) {
+  if (!alignment_publisher_) {
     return false;
   }
-  const auto alignment = global_alignment_state_->snapshot();
-  if (!alignment || !alignment->valid()) {
+  const auto map_to_odom = alignment_publisher_->currentMapToOdom();
+  if (!map_to_odom) {
     return false;
   }
-  T_map_odom = toBasicPose(alignment->T_map_odom.T_target_source);
+  T_map_odom = toBasicPose(*map_to_odom);
   return true;
 }
 
@@ -1301,7 +1262,8 @@ void PointLIOPipeline::applyBackendAlignmentFromSnapshot() {
         << hybrid_slam::logging::kYellow
         << " ---> [GlobalAlignment]: backend-driven map->odom rejected"
         << ", snapshot_version=" << snapshot->version
-        << ", rejected_total=" << alignment_updates_rejected_
+        << ", rejected_total="
+        << (alignment_publisher_ ? alignment_publisher_->stats().rejected : 0)
         << hybrid_slam::logging::kReset;
   }
 }

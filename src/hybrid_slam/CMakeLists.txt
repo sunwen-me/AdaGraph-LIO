@@ -120,6 +120,7 @@ set(HYBRID_SLAM_ROS_PUBLICATION_SRC
 )
 set(HYBRID_SLAM_POINT_LIO_PIPELINE_SRC
   src/system/frame_health_gate.cpp
+  src/system/global_alignment_publisher.cpp
   src/system/map_save_facade.cpp
   src/system/point_lio_pipeline.cpp
 )
