@@ -13,8 +13,8 @@
         "maximum_path_length_m": 32.0,
         "maximum_ape_rmse_m": 0.55,
         "require_backend_chain_consistency": true,
-        "maximum_optimizer_translation_delta_m": 0.00001,
-        "maximum_optimizer_rotation_delta_rad": 0.00001
+        "maximum_optimizer_translation_delta_m": 1e-05,
+        "maximum_optimizer_rotation_delta_rad": 1e-05
       }
     },
     {
@@ -125,6 +125,31 @@
           "minimum_constraints": 3,
           "maximum_translation_residual_m": 1.5,
           "maximum_rotation_residual_rad": 0.15
+        }
+      }
+    },
+    {
+      "id": "m2dgr_room01_point_lio_5x_frontend_health",
+      "frontend": "point_lio",
+      "sequence": "room_01",
+      "replay_rate": 5.0,
+      "params": "src/hybrid_slam/config/point_lio_m2dgr.yaml",
+      "frontend_health": {
+        "enable": true,
+        "lidar_dropout_lost_timeout_s": 1.0
+      },
+      "acceptance": {
+        "minimum_pose_count": 600,
+        "minimum_path_length_m": 24.0,
+        "maximum_path_length_m": 32.0,
+        "maximum_ape_rmse_m": 0.55,
+        "frontend_health": {
+          "require_enabled": true,
+          "minimum_forced_dropouts": 1,
+          "required_transitions": [
+            "TRACKING->LOST"
+          ],
+          "maximum_timeout_observations_skipped": 0
         }
       }
     }

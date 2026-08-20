@@ -527,6 +527,59 @@ def evaluate_acceptance(
                                     f"{entry.get('path')}"
                                 )
 
+    health_acceptance = acceptance.get("frontend_health")
+    if health_acceptance is not None:
+        if not isinstance(health_acceptance, dict):
+            failures.append("frontend_health acceptance field is not an object")
+        else:
+            diagnostics = summary.get("diagnostics", {})
+            health = (
+                diagnostics.get("frontend_health", {})
+                if isinstance(diagnostics, dict)
+                else {}
+            )
+            if not isinstance(health, dict) or not health:
+                failures.append("frontend health diagnostics are missing")
+            else:
+                if health_acceptance.get("require_enabled", False) and not health.get(
+                    "enabled", False
+                ):
+                    # A run that silently left health disabled proves nothing
+                    # about the state machine, which is the whole point here.
+                    failures.append(
+                        "frontend health was not enabled for this case"
+                    )
+                minimum_dropouts = health_acceptance.get("minimum_forced_dropouts")
+                if minimum_dropouts is not None:
+                    observed = int(health.get("forced_dropout_count", 0))
+                    if observed < int(minimum_dropouts):
+                        failures.append(
+                            f"forced LiDAR dropouts {observed} < minimum "
+                            f"{int(minimum_dropouts)}: the watchdog never fired"
+                        )
+                maximum_skipped = health_acceptance.get(
+                    "maximum_timeout_observations_skipped"
+                )
+                if maximum_skipped is not None:
+                    skipped = int(health.get("timeout_observations_skipped", 0))
+                    if skipped > int(maximum_skipped):
+                        failures.append(
+                            f"watchdog skipped {skipped} ticks > maximum "
+                            f"{int(maximum_skipped)}: frame processing is "
+                            "outlasting the health timer"
+                        )
+                expected = health_acceptance.get("required_transitions")
+                if expected is not None:
+                    transitions = health.get("transitions", [])
+                    if not isinstance(transitions, list):
+                        failures.append("frontend health transitions are missing")
+                    else:
+                        for name in expected:
+                            if str(name) not in transitions:
+                                failures.append(
+                                    f"frontend health never reported {name}"
+                                )
+
     loop_acceptance = acceptance.get("loop_closure")
     if loop_acceptance is not None:
         if not isinstance(loop_acceptance, dict):
@@ -854,6 +907,10 @@ def run_case(
             ("enable", "FRONTEND_HEALTH_ENABLE"),
             ("lost_bad_frames", "FRONTEND_HEALTH_LOST_BAD_FRAMES"),
             ("recover_good_frames", "FRONTEND_HEALTH_RECOVER_GOOD_FRAMES"),
+            (
+                "lidar_dropout_lost_timeout_s",
+                "FRONTEND_HEALTH_LIDAR_DROPOUT_LOST_TIMEOUT_S",
+            ),
         ):
             if field in frontend_health:
                 environment[variable] = str(frontend_health[field]).lower()

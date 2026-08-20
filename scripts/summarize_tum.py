@@ -307,6 +307,35 @@ def parse_node_diagnostics(path: Optional[Path]) -> Dict[str, object]:
             ),
         }
 
+    # Frontend health leaves no aggregate line, so its evidence is counted from
+    # the transition and dropout records. Without this the health state machine
+    # is invisible to every gate: it is disabled in all shipped configs, so a
+    # case that enables it needs proof the watchdog actually fired.
+    health_transitions = re.findall(
+        r"\[FrontendHealth\]:\s*([A-Z]+)\s*->\s*([A-Z]+)", text)
+    forced_dropouts = re.findall(
+        r"\[FrontendHealth\]: LiDAR dropout forced LOST elapsed_s=([-+0-9.eE]+)",
+        text)
+    watchdog_skipped = re.findall(
+        r"\[FrontendWatchdog\]:\s*timeout_observations_skipped=(\d+)", text)
+    health_enabled = re.findall(
+        r"\[FrontendHealth\]: enabled=([01])", text)
+    if health_transitions or forced_dropouts or health_enabled:
+        diagnostics["frontend_health"] = {
+            "enabled": bool(int(health_enabled[-1])) if health_enabled else None,
+            "transition_count": len(health_transitions),
+            "transitions": ["{}->{}".format(a, b) for a, b in health_transitions],
+            "forced_dropout_count": len(forced_dropouts),
+            "maximum_forced_dropout_elapsed_s": (
+                max(float(value) for value in forced_dropouts)
+                if forced_dropouts
+                else 0.0
+            ),
+            "timeout_observations_skipped": (
+                int(watchdog_skipped[-1]) if watchdog_skipped else 0
+            ),
+        }
+
     backend_memory_pattern = re.compile(
         r"\[BackendScheduler\]:[^\n]*"
         r"keyframe_clouds\(unique/points/logical/backing\)="
