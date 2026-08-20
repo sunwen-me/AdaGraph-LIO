@@ -29,11 +29,11 @@ TEST(PointLioRecoveryTransition,
   RigidTransform3d published_map_odom;
   bool published_alignment = false;
   LI2Sup::PointLIOPipelineCallbacks callbacks;
-  callbacks.set_frontend_local_map_write_enabled =
+  callbacks.frontend.set_frontend_local_map_write_enabled =
       [&local_map_write_enabled](const bool enabled) {
         local_map_write_enabled = enabled;
       };
-  callbacks.set_map_to_odom =
+  callbacks.alignment.set_map_to_odom =
       [&published_map_odom, &published_alignment](
           const RigidTransform3d& transform) {
         published_map_odom = transform;
@@ -75,11 +75,11 @@ TEST(PointLioRecoveryPipeline,
   std::size_t clear_count = 0;
   bool local_map_write_enabled = true;
   LI2Sup::PointLIOPipelineCallbacks callbacks;
-  callbacks.set_frontend_local_map_write_enabled =
+  callbacks.frontend.set_frontend_local_map_write_enabled =
       [&local_map_write_enabled](const bool enabled) {
         local_map_write_enabled = enabled;
       };
-  callbacks.clear_frontend_online_local_map = [&clear_count] {
+  callbacks.frontend.clear_frontend_online_local_map = [&clear_count] {
     ++clear_count;
   };
 
@@ -126,7 +126,7 @@ TEST(PointLioRecoveryPipeline,
      RecoveryCommitStartsANewWatchdogWindowBeforeVerification) {
   std::size_t clear_count = 0;
   LI2Sup::PointLIOPipelineCallbacks callbacks;
-  callbacks.clear_frontend_online_local_map = [&clear_count] { ++clear_count; };
+  callbacks.frontend.clear_frontend_online_local_map = [&clear_count] { ++clear_count; };
 
   LI2Sup::PointLIORuntimeConfig runtime;
   runtime.frontend_health.enabled = true;
@@ -390,7 +390,7 @@ TEST(PointLioRecoveryPipeline, LostFramesDoNotAdmitDurableKeyframes) {
   std::size_t recovery_queries = 0;
   bool local_map_write_enabled = true;
   LI2Sup::PointLIOPipelineCallbacks callbacks;
-  callbacks.request_submap_recovery =
+  callbacks.recovery.request_submap_recovery =
       [&recovery_queries](
           const hybrid_slam::localization::RelocalizationQuery& query,
           std::shared_ptr<const hybrid_slam::mapping::MapSnapshot> snapshot) {
@@ -398,7 +398,7 @@ TEST(PointLioRecoveryPipeline, LostFramesDoNotAdmitDurableKeyframes) {
         ASSERT_TRUE(snapshot);
         ++recovery_queries;
       };
-  callbacks.set_frontend_local_map_write_enabled =
+  callbacks.frontend.set_frontend_local_map_write_enabled =
       [&local_map_write_enabled](const bool enabled) {
         local_map_write_enabled = enabled;
       };
@@ -461,7 +461,7 @@ TEST(PointLioRecoveryPipeline, LostFramesDoNotAdmitDurableKeyframes) {
 TEST(PointLioRecoveryPipeline, LidarWatchdogDetectsDropoutWithoutNewFrames) {
   std::size_t recovery_queries = 0;
   LI2Sup::PointLIOPipelineCallbacks callbacks;
-  callbacks.request_submap_recovery =
+  callbacks.recovery.request_submap_recovery =
       [&recovery_queries](
           const hybrid_slam::localization::RelocalizationQuery& query,
           std::shared_ptr<const hybrid_slam::mapping::MapSnapshot> snapshot) {
@@ -533,7 +533,7 @@ TEST(PointLioRecoveryPipeline,
   float first_query_x = 0.0F;
   float last_query_x = 0.0F;
   LI2Sup::PointLIOPipelineCallbacks callbacks;
-  callbacks.request_submap_recovery =
+  callbacks.recovery.request_submap_recovery =
       [&query_count, &query_points, &first_query_x, &last_query_x](
           const hybrid_slam::localization::RelocalizationQuery& query,
           std::shared_ptr<const hybrid_slam::mapping::MapSnapshot> snapshot) {

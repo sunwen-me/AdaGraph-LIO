@@ -495,7 +495,7 @@ Application makeApplication(const Options& options) {
   };
   auto frontend = std::make_shared<PointLIOFrontend>(readPointConfig(node));
   PointLIOPipelineCallbacks downstream_callbacks;
-  downstream_callbacks.set_frontend_local_map_write_enabled =
+  downstream_callbacks.frontend.set_frontend_local_map_write_enabled =
       [frontend](bool enabled) {
         frontend->setLocalMapWriteEnabled(enabled);
       };

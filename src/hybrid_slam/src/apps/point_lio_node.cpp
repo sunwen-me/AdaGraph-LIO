@@ -243,7 +243,7 @@ int main(int argc, char** argv) {
   auto manual_relocalization_requested =
       std::make_shared<std::atomic<bool>>(false);
   LI2Sup::PointLIOPipelineCallbacks downstream_callbacks;
-  downstream_callbacks.publish_backend_snapshot =
+  downstream_callbacks.publication.publish_backend_snapshot =
       [publication, loop_closure_scheduler_holder, last_loop_finished_submap,
        loop_closure_enabled, last_loop_finished_submap_mutex](
           std::shared_ptr<const hybrid_slam::mapping::MapSnapshot> snapshot) {
@@ -302,15 +302,15 @@ int main(int argc, char** argv) {
           *last_loop_finished_submap = identity;
         }
       };
-  downstream_callbacks.publish_global_map =
+  downstream_callbacks.publication.publish_global_map =
       [publication](const hybrid_slam::sensor::ImmutablePointCloud& cloud) {
         publication->setGlobalMap(cloud);
       };
-  downstream_callbacks.set_prior_map_localization_active =
+  downstream_callbacks.alignment.set_prior_map_localization_active =
       [publication](bool active) {
         publication->setPriorMapLocalizationActive(active);
       };
-  downstream_callbacks.get_transform_publication_stats = [publication] {
+  downstream_callbacks.publication.get_transform_publication_stats = [publication] {
     const auto stats = publication->transformPublicationStats();
     return LI2Sup::PointLIOPipelineCallbacks::TransformPublicationStats{
         stats.odom_base_published,
@@ -319,15 +319,15 @@ int main(int argc, char** argv) {
         stats.nonmonotonic_map_odom_stamps,
     };
   };
-  downstream_callbacks.set_frontend_local_map_write_enabled =
+  downstream_callbacks.frontend.set_frontend_local_map_write_enabled =
       [frontend](bool enabled) {
         frontend->setLocalMapWriteEnabled(enabled);
       };
-  downstream_callbacks.set_frontend_recovery_query_mode =
+  downstream_callbacks.frontend.set_frontend_recovery_query_mode =
       [frontend](bool enabled) {
         frontend->setRecoveryQueryMode(enabled);
       };
-  downstream_callbacks.clear_frontend_online_local_map =
+  downstream_callbacks.frontend.clear_frontend_online_local_map =
       [frontend, node] {
         frontend->setInputEnabled(false);
         (void)frontend->discardQueuedInput();
@@ -345,7 +345,7 @@ int main(int argc, char** argv) {
         }
         frontend->setInputEnabled(true);
       };
-  downstream_callbacks.request_submap_recovery =
+  downstream_callbacks.recovery.request_submap_recovery =
       [submap_recovery_scheduler_holder](
           const hybrid_slam::localization::RelocalizationQuery& query,
           std::shared_ptr<const hybrid_slam::mapping::MapSnapshot> map) {
@@ -354,34 +354,34 @@ int main(int argc, char** argv) {
           (void)scheduler->submit(query, std::move(map));
         }
       };
-  downstream_callbacks.reset_session_state =
+  downstream_callbacks.session.reset_session_state =
       [publication] { publication->resetSession(); };
-  downstream_callbacks.set_map_to_odom =
+  downstream_callbacks.alignment.set_map_to_odom =
       [publication](const hybrid_slam::geometry::RigidTransform3d& transform) {
         publication->setMapToOdom(transform);
       };
-  downstream_callbacks.get_map_to_odom =
+  downstream_callbacks.alignment.get_map_to_odom =
       [publication](hybrid_slam::geometry::RigidTransform3d& transform) {
         return publication->getMapToOdom(transform);
       };
-  downstream_callbacks.consume_manual_relocalization_request =
+  downstream_callbacks.recovery.consume_manual_relocalization_request =
       [manual_relocalization_requested] {
         return manual_relocalization_requested->exchange(
             false, std::memory_order_acq_rel);
       };
-  downstream_callbacks.occupancy_grid_enabled =
+  downstream_callbacks.publication.occupancy_grid_enabled =
       [publication] { return publication->occupancyGridEnabled(); };
-  downstream_callbacks.update_occupancy_grid =
+  downstream_callbacks.publication.update_occupancy_grid =
       [publication](const hybrid_slam::sensor::ImmutablePointCloud& cloud,
                     const LI2Sup::NavState& state) {
         publication->updateOccupancyGridFromBodyCloud(cloud, state);
       };
-  downstream_callbacks.publish_odom =
+  downstream_callbacks.publication.publish_odom =
       [publication](const LI2Sup::NavState& state,
                     const Eigen::Vector3d& angular_velocity) {
         publication->publishOdom(state, angular_velocity);
       };
-  downstream_callbacks.publish_cloud_world =
+  downstream_callbacks.publication.publish_cloud_world =
       [publication](const hybrid_slam::sensor::ImmutablePointCloud& cloud,
                     double timestamp) {
         publication->publishCloudWorld(cloud, timestamp);

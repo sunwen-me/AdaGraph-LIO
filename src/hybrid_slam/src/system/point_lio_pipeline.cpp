@@ -239,9 +239,9 @@ bool PointLIOPipeline::commitPreparedRecoveredTrajectory() {
   if (frontend_health_monitor_) {
     frontend_health_monitor_->beginVerifying();
   }
-  if (callbacks_.set_frontend_local_map_write_enabled) {
+  if (callbacks_.frontend.set_frontend_local_map_write_enabled) {
     try {
-      callbacks_.set_frontend_local_map_write_enabled(false);
+      callbacks_.frontend.set_frontend_local_map_write_enabled(false);
     } catch (...) {
       LOG(ERROR) << hybrid_slam::logging::kRed
                  << " ---> [PointLIOPipeline]: local-map write callback "
@@ -414,8 +414,8 @@ void PointLIOPipeline::init(
             << runtime_config_.frontend_health.verification_grace_frames << "/"
             << runtime_config_.frontend_health.recovery_cooldown_frames
             << hybrid_slam::logging::kReset;
-  if (callbacks_.set_frontend_local_map_write_enabled) {
-    callbacks_.set_frontend_local_map_write_enabled(true);
+  if (callbacks_.frontend.set_frontend_local_map_write_enabled) {
+    callbacks_.frontend.set_frontend_local_map_write_enabled(true);
   }
   backend_config_ = runtime_config_.backend;
   if (const auto error = backend_config_.validate()) {
@@ -431,7 +431,7 @@ void PointLIOPipeline::init(
           backend_config_,
           std::make_unique<hybrid_slam::backend::Isam2Optimizer>(
               backend_config_),
-          [publish = callbacks_.publish_backend_snapshot](
+          [publish = callbacks_.publication.publish_backend_snapshot](
               std::shared_ptr<const hybrid_slam::mapping::MapSnapshot> snapshot) {
             if (publish) {
               publish(std::move(snapshot));
@@ -447,7 +447,7 @@ void PointLIOPipeline::init(
       std::make_unique<hybrid_slam::system::GlobalAlignmentState>();
   prior_map_localization_ = std::make_unique<PriorMapLocalization>();
   const bool localization_active = prior_map_localization_->init(
-      [publish = callbacks_.publish_global_map](const PclCloudPtr& prior_map) {
+      [publish = callbacks_.publication.publish_global_map](const PclCloudPtr& prior_map) {
         if (publish) {
           publish(SharePclCloud(
               prior_map, hybrid_slam::geometry::FrameId::kMap));
@@ -462,8 +462,8 @@ void PointLIOPipeline::init(
       runtime_config_.prior_map.use_backend_localization_factor,
       runtime_config_.prior_map.root_dir,
       runtime_config_.prior_map.fallback_map_file);
-  if (callbacks_.set_prior_map_localization_active) {
-    callbacks_.set_prior_map_localization_active(localization_active);
+  if (callbacks_.alignment.set_prior_map_localization_active) {
+    callbacks_.alignment.set_prior_map_localization_active(localization_active);
   }
 
   initialized_ = true;
@@ -720,8 +720,8 @@ void PointLIOPipeline::finish() {
   if (global_alignment_state_) {
     const auto alignment = global_alignment_state_->snapshot();
     hybrid_slam::geometry::RigidTransform3d published_map_to_odom;
-    if (alignment && callbacks_.get_map_to_odom &&
-        callbacks_.get_map_to_odom(published_map_to_odom)) {
+    if (alignment && callbacks_.alignment.get_map_to_odom &&
+        callbacks_.alignment.get_map_to_odom(published_map_to_odom)) {
       const auto& typed = alignment->T_map_odom.T_target_source;
       const double translation_delta =
           (typed.translation - published_map_to_odom.translation).norm();
@@ -736,8 +736,8 @@ void PointLIOPipeline::finish() {
                 << " rad" << hybrid_slam::logging::kReset;
     }
   }
-  if (callbacks_.get_transform_publication_stats) {
-    const auto tf_stats = callbacks_.get_transform_publication_stats();
+  if (callbacks_.publication.get_transform_publication_stats) {
+    const auto tf_stats = callbacks_.publication.get_transform_publication_stats();
     LOG(INFO) << hybrid_slam::logging::kGreen
               << " ---> [PointLIOTf]: odom_base_published="
               << tf_stats.odom_base_published
@@ -795,11 +795,11 @@ void PointLIOPipeline::reset() {
   }
   finishMapIo();
 
-  if (callbacks_.set_prior_map_localization_active) {
-    callbacks_.set_prior_map_localization_active(false);
+  if (callbacks_.alignment.set_prior_map_localization_active) {
+    callbacks_.alignment.set_prior_map_localization_active(false);
   }
-  if (callbacks_.reset_session_state) {
-    callbacks_.reset_session_state();
+  if (callbacks_.session.reset_session_state) {
+    callbacks_.session.reset_session_state();
   }
 
   keyframe_policy_.reset();
@@ -1067,19 +1067,19 @@ PointLIOPipeline::updateFrontendHealth(const PointLIOOutputFrame& frame,
 void PointLIOPipeline::applyFrontendHealthDecision(
     const hybrid_slam::frontend::FrontendHealthState previous_state,
     const hybrid_slam::frontend::FrontendHealthDecision& decision) {
-  if (callbacks_.set_frontend_local_map_write_enabled) {
-    callbacks_.set_frontend_local_map_write_enabled(
+  if (callbacks_.frontend.set_frontend_local_map_write_enabled) {
+    callbacks_.frontend.set_frontend_local_map_write_enabled(
         decision.local_map_write_enabled);
   }
-  if (callbacks_.set_frontend_recovery_query_mode) {
-    callbacks_.set_frontend_recovery_query_mode(
+  if (callbacks_.frontend.set_frontend_recovery_query_mode) {
+    callbacks_.frontend.set_frontend_recovery_query_mode(
         decision.state == hybrid_slam::frontend::FrontendHealthState::kLost);
   }
   if (previous_state ==
           hybrid_slam::frontend::FrontendHealthState::kVerifying &&
       decision.state == hybrid_slam::frontend::FrontendHealthState::kLost &&
-      callbacks_.clear_frontend_online_local_map) {
-    callbacks_.clear_frontend_online_local_map();
+      callbacks_.frontend.clear_frontend_online_local_map) {
+    callbacks_.frontend.clear_frontend_online_local_map();
   }
   if (previous_state ==
           hybrid_slam::frontend::FrontendHealthState::kVerifying &&
@@ -1126,7 +1126,7 @@ void PointLIOPipeline::maybeRequestSubmapRecovery(
     const std::optional<hybrid_slam::localization::RelocalizationQuery>&
         query) {
   if (state != hybrid_slam::frontend::FrontendHealthState::kLost ||
-      !callbacks_.request_submap_recovery || !query || !query->valid()) {
+      !callbacks_.recovery.request_submap_recovery || !query || !query->valid()) {
     return;
   }
   if (recovery_retry_cooldown_frames_ > 0) {
@@ -1140,7 +1140,7 @@ void PointLIOPipeline::maybeRequestSubmapRecovery(
   if (frontend_health_monitor_) {
     frontend_health_monitor_->beginRelocalizing();
   }
-  callbacks_.request_submap_recovery(*query, snapshot);
+  callbacks_.recovery.request_submap_recovery(*query, snapshot);
   resetRecoveryQueryAccumulator();
 }
 
@@ -1162,9 +1162,9 @@ PointLIOPipeline::appendRecoveryQueryFrame(
         T_odom_base,
         SharePclCloud(accumulated_base, hybrid_slam::geometry::FrameId::kBase),
         std::nullopt};
-    if (callbacks_.get_map_to_odom) {
+    if (callbacks_.alignment.get_map_to_odom) {
       hybrid_slam::geometry::RigidTransform3d T_map_odom;
-      if (callbacks_.get_map_to_odom(T_map_odom) &&
+      if (callbacks_.alignment.get_map_to_odom(T_map_odom) &&
           T_map_odom.isFinite()) {
         query.prior_T_map_base =
             hybrid_slam::geometry::StampedTransform3d{
@@ -1412,9 +1412,9 @@ bool PointLIOPipeline::commitGlobalAlignment(
   }
   ++alignment_updates_committed_;
   const auto alignment = global_alignment_state_->snapshot();
-  if (alignment && callbacks_.set_map_to_odom) {
+  if (alignment && callbacks_.alignment.set_map_to_odom) {
     try {
-      callbacks_.set_map_to_odom(alignment->T_map_odom.T_target_source);
+      callbacks_.alignment.set_map_to_odom(alignment->T_map_odom.T_target_source);
     } catch (...) {
       // Publication is an external side effect. Keep the typed alignment
       // committed; the next snapshot/TF publication can repair a consumer
@@ -1646,8 +1646,8 @@ void PointLIOPipeline::processPointFrame(
   // Holding the recovery lock across it would make the frontend watchdog and
   // the recovery scheduler callbacks queue behind publication work.
   if (prior_map_localization_ && prior_map_localization_->enabled()) {
-    if (callbacks_.consume_manual_relocalization_request &&
-        callbacks_.consume_manual_relocalization_request()) {
+    if (callbacks_.recovery.consume_manual_relocalization_request &&
+        callbacks_.recovery.consume_manual_relocalization_request()) {
       prior_map_localization_->requestGlobalRelocalization();
     }
     prior_map_localization_->submit(
@@ -1656,12 +1656,12 @@ void PointLIOPipeline::processPointFrame(
 
   // Both decimation steps are validated to be >= 1 by PointLIORuntimeConfig
   // and clamped again by the parameter adapters, so the modulo is safe.
-  if (callbacks_.occupancy_grid_enabled && callbacks_.update_occupancy_grid &&
-      callbacks_.occupancy_grid_enabled()) {
+  if (callbacks_.publication.occupancy_grid_enabled && callbacks_.publication.update_occupancy_grid &&
+      callbacks_.publication.occupancy_grid_enabled()) {
     const auto grid_step =
         static_cast<std::uint64_t>(runtime_config_.grid_update_step);
     if ((grid_count_++ % grid_step) == 0) {
-      callbacks_.update_occupancy_grid(
+      callbacks_.publication.update_occupancy_grid(
           SharePclCloud(get_body_cloud(),
                         hybrid_slam::geometry::FrameId::kBase),
           state);
@@ -1673,9 +1673,9 @@ void PointLIOPipeline::processPointFrame(
   const bool publish_world =
       runtime_config_.visualize_map &&
       (visualization_count_++ % pub_step) == 0;
-  if (publish_world && callbacks_.publish_cloud_world) {
+  if (publish_world && callbacks_.publication.publish_cloud_world) {
     const PclCloudPtr world_cloud = toCloud(frame.dense_points_odom);
-    callbacks_.publish_cloud_world(
+    callbacks_.publication.publish_cloud_world(
         SharePclCloud(world_cloud, hybrid_slam::geometry::FrameId::kOdom),
         state.timestamp);
   }

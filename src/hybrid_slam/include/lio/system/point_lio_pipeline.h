@@ -67,45 +67,66 @@ struct PointLIOPipelineCallbacks {
       std::shared_ptr<const hybrid_slam::mapping::MapSnapshot>;
   using PointCloud = hybrid_slam::sensor::ImmutablePointCloud;
 
-  std::function<void(MapSnapshotPtr)> publish_backend_snapshot;
-  std::function<void(const PointCloud&)> publish_global_map;
-  std::function<void(bool)> set_prior_map_localization_active;
   struct TransformPublicationStats {
     std::uint64_t odom_base_published = 0;
     std::uint64_t map_odom_published = 0;
     std::uint64_t nonmonotonic_odom_base_stamps = 0;
     std::uint64_t nonmonotonic_map_odom_stamps = 0;
   };
-  // ROS adapters return publication evidence here. The pipeline only reports
-  // it at shutdown and remains usable without a TF implementation.
-  std::function<TransformPublicationStats()> get_transform_publication_stats;
-  // Changes only future vendor map admission. The callback must be cheap and
-  // must not wait for localization or backend work.
-  std::function<void(bool)> set_frontend_local_map_write_enabled;
-  // Enables the frontend's independent IMU-only recovery query path while
-  // lifecycle state is LOST. It must not wait for scan registration.
-  std::function<void(bool)> set_frontend_recovery_query_mode;
-  // Called after a failed recovery verification. The application adapter
-  // pauses typed ingress, discards queued packets, clears only the
-  // provisional online layer, and resumes ingress; the read-only prior layer
-  // is retained.
-  std::function<void()> clear_frontend_online_local_map;
-  // Called from the downstream worker when health remains LOST. The callback
-  // must only enqueue background recovery work and return quickly.
-  std::function<void(
-      const hybrid_slam::localization::RelocalizationQuery&,
-      MapSnapshotPtr)> request_submap_recovery;
-  std::function<void()> reset_session_state;
-  std::function<void(const hybrid_slam::geometry::RigidTransform3d&)>
-      set_map_to_odom;
-  std::function<bool(hybrid_slam::geometry::RigidTransform3d&)>
-      get_map_to_odom;
-  std::function<bool()> consume_manual_relocalization_request;
-  std::function<bool()> occupancy_grid_enabled;
-  std::function<void(const PointCloud&, const NavState&)>
-      update_occupancy_grid;
-  std::function<void(const NavState&, const Eigen::Vector3d&)> publish_odom;
-  std::function<void(const PointCloud&, double)> publish_cloud_world;
+
+  // Output. Invoked from the downstream worker and allowed to be slow: these
+  // serialize clouds, raycast the occupancy grid and hand buffers to ROS. None
+  // of them may run while the recovery transition lock is held, because the
+  // frontend watchdog and the recovery scheduler would then queue behind
+  // publication work.
+  struct Publication {
+    std::function<void(MapSnapshotPtr)> publish_backend_snapshot;
+    std::function<void(const PointCloud&)> publish_global_map;
+    std::function<void(const NavState&, const Eigen::Vector3d&)> publish_odom;
+    std::function<void(const PointCloud&, double)> publish_cloud_world;
+    std::function<bool()> occupancy_grid_enabled;
+    std::function<void(const PointCloud&, const NavState&)>
+        update_occupancy_grid;
+    // Publication evidence read back at shutdown only. The pipeline stays
+    // usable without any TF implementation.
+    std::function<TransformPublicationStats()> get_transform_publication_stats;
+  } publication;
+
+  // Frontend admission control. Each one must be cheap and must never wait for
+  // localization, backend or registration work; the estimator thread is on the
+  // other side of them.
+  struct FrontendControl {
+    // Changes only future vendor map admission.
+    std::function<void(bool)> set_frontend_local_map_write_enabled;
+    // Enables the IMU-only recovery query path while health is LOST.
+    std::function<void(bool)> set_frontend_recovery_query_mode;
+    // Called after a failed recovery verification. The adapter pauses typed
+    // ingress, discards queued packets, clears only the provisional online
+    // layer and resumes ingress; the read-only prior layer is retained.
+    std::function<void()> clear_frontend_online_local_map;
+  } frontend;
+
+  // Global alignment exchange with the ROS/TF adapter.
+  struct Alignment {
+    std::function<void(const hybrid_slam::geometry::RigidTransform3d&)>
+        set_map_to_odom;
+    std::function<bool(hybrid_slam::geometry::RigidTransform3d&)>
+        get_map_to_odom;
+    std::function<void(bool)> set_prior_map_localization_active;
+  } alignment;
+
+  // Recovery hand-off. Both must only enqueue background work and return
+  // promptly; they are called from the downstream worker while health is LOST.
+  struct Recovery {
+    std::function<void(
+        const hybrid_slam::localization::RelocalizationQuery&,
+        MapSnapshotPtr)> request_submap_recovery;
+    std::function<bool()> consume_manual_relocalization_request;
+  } recovery;
+
+  struct Session {
+    std::function<void()> reset_session_state;
+  } session;
 };
 
 // Point-LIO system boundary. The typed BackendScheduler/MapManager path is
