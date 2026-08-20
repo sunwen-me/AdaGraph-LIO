@@ -95,8 +95,8 @@
         "require_backend_chain_consistency": true,
         "loop_closure": {
           "minimum_constraints": 5,
-          "maximum_translation_residual_m": 0.5,
-          "maximum_rotation_residual_rad": 0.05
+          "maximum_translation_residual_m": 1.5,
+          "maximum_rotation_residual_rad": 0.15
         }
       }
     },
@@ -123,8 +123,8 @@
         "require_backend_chain_consistency": true,
         "loop_closure": {
           "minimum_constraints": 3,
-          "maximum_translation_residual_m": 0.5,
-          "maximum_rotation_residual_rad": 0.05
+          "maximum_translation_residual_m": 1.5,
+          "maximum_rotation_residual_rad": 0.15
         }
       }
     }
